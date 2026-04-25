@@ -10,6 +10,11 @@ from dotenv import load_dotenv
 from auto_sre_env.environment import AutoSREEnv
 from auto_sre_env.models import Action
 
+try:
+    from IPython.display import display, Image
+except ImportError:
+    pass
+
 load_dotenv()
 
 HF_TOKENS = [
@@ -63,10 +68,42 @@ Queries made: {queries_made}
 Last action: {last_action}
 Step: {step} of {max_steps}
 
-CRITICAL RULES:
-1. GATHER SIGNALS: You MUST gather at least 2 relevant signals (queries) before applying any fix. Premature fixes are penalized (-0.2).
-2. CHAIN OF FIXES: Most incidents require a SEQUENCE of 2-3 fixes. A single action rarely resolves the issue fully.
-3. OBSERVE & PIVOT: After a partial fix, metrics may improve but the incident is not over. Re-evaluate and apply the next step.
+CRITICAL EXECUTION RULES:
+1. NEVER repeat the same action twice
+   - If an action was already taken, choose a DIFFERENT one
+2. ALWAYS follow fix dependency chains
+   - If required_fixes = [A, B, C]
+   - You MUST apply them in order
+   - Do NOT skip steps
+3. LIMIT exploration:
+   - Maximum 2 queries allowed
+   - After 2 signals -> MUST start applying fixes
+4. NO RANDOM ACTIONS:
+   - Every action must directly follow from signals
+5. ACTION PRIORITY:
+   - If root cause identified -> immediately start fix chain
+   - Do NOT keep querying
+6. IF a fix fails:
+   - Identify missing prerequisite
+   - Apply THAT prerequisite next
+7. GOAL:
+   - Solve in minimum steps (target: 4-6)
+   - Avoid penalties from: repeated actions, premature fixes, wrong order
+
+OUTPUT REQUIREMENT:
+You MUST return a VALID action every step:
+- action_type
+- tool or target
+- parameters
+Do NOT produce incomplete JSON.
+
+BEHAVIORAL CHANGE:
+The agent must behave like:
+-> a decisive SRE engineer
+-> NOT a researcher writing analysis
+Focus on:
+-> Correct sequence of actions
+-> Minimal steps to resolution
 
 AVAILABLE TOOLS (APIs):
 - get_network_latency()
@@ -513,6 +550,7 @@ def run_loop():
 
     # 3. PLOT RESULTS
     try:
+        print("\nDisplaying: Reward vs Episode")
         plt.figure()
         plt.plot(rewards, marker='o')
         plt.title(f"{MODE.upper()} Reward vs Episode")
@@ -520,7 +558,13 @@ def run_loop():
         plt.ylabel("Total Reward")
         plt.grid()
         plt.savefig(f"{MODE}_reward_curve.png")
+        plt.show()
+        try:
+            display(Image(f"{MODE}_reward_curve.png"))
+        except NameError:
+            pass
 
+        print("\nDisplaying: Steps vs Episode")
         plt.figure()
         plt.plot(steps_list, marker='o')
         plt.title(f"{MODE.upper()} Steps vs Episode")
@@ -528,6 +572,11 @@ def run_loop():
         plt.ylabel("Steps Taken")
         plt.grid()
         plt.savefig(f"{MODE}_steps_curve.png")
+        plt.show()
+        try:
+            display(Image(f"{MODE}_steps_curve.png"))
+        except NameError:
+            pass
         
         print(f">>> Saved '{MODE}_reward_curve.png' and '{MODE}_steps_curve.png' to current directory.")
     except Exception as e:
