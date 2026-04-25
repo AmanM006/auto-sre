@@ -10,7 +10,7 @@ app = FastAPI()
 env = AutoSREEnv()
 
 
-@app.get("/")
+@app.get("/api")
 def root():
     return {
         "project": "Auto-SRE",
