@@ -3,10 +3,16 @@ from typing import Dict, List, Optional
 
 # Action sent by agent
 class Action(BaseModel):
-    action_type: str                        # "restart", "scale", "flush_cache", or "delegate"
-    target: Optional[str] = None            # service name OR "@network-eng" / "@db-admin"
-    query: Optional[str] = None             # sub-agent query: "traffic_status", "db_load", etc.
-    delegate_action: Optional[str] = None   # sub-agent mutation: "restart_db", "clear_connections"
+    action_type: str                        # "tool_call", "system_action", "restart", "scale", "flush_cache", "delegate"
+    
+    # New ACRS Tool API
+    tool: Optional[str] = None              # "get_db_metrics", "restart_service", etc.
+    params: dict = {}                       # {"service": "api-service"}
+    
+    # Legacy compatibility fields
+    target: Optional[str] = None            
+    query: Optional[str] = None             
+    delegate_action: Optional[str] = None   
 
 
 # Response from a sub-agent (domain-scoped, partial view)
@@ -28,3 +34,4 @@ class Observation(BaseModel):
 class State(BaseModel):
     step_count: int
     done: bool
+    system_phase: str = "NORMAL"

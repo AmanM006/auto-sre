@@ -111,5 +111,13 @@ def _handle_db_admin(action: Action, state: dict) -> SubAgentResponse:
                                 data={"active": _add_noise(active), "max": 100},
                                 message=f"Connections: {active}/100 active")
 
+    elif query == "cache_status":
+        cache_svc = state.get("services", {}).get("cache-service", {})
+        status = cache_svc.get("status", "running")
+        hit_rate = 15 if status != "running" else 98
+        return SubAgentResponse(agent="@db-admin", response_type="metrics",
+                                data={"status": status, "hit_rate_pct": _add_noise(hit_rate)},
+                                message=f"Cache status: {status}, Hit Rate: {hit_rate}%")
+
     return SubAgentResponse(agent="@db-admin", response_type="metrics", data={"status": "online"},
-                            message="DB sub-agent operational. Use 'db_load', 'lock_status', 'slow_queries', or 'connection_stats'.")
+                            message="DB sub-agent operational. Use 'db_load', 'lock_status', 'slow_queries', 'connection_stats', or 'cache_status'.")

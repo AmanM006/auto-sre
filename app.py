@@ -33,24 +33,24 @@ Last reasoning: {last_reasoning}
 CRITICAL RULES:
 1. GATHER SIGNALS: You MUST gather at least 2 relevant signals (queries) before applying any fix. Premature fixes are penalized (-0.5).
 2. CHAIN OF FIXES: Most incidents require a SEQUENCE of 2-3 fixes. A single action rarely resolves the issue fully.
-3. VALID TARGETS: @network-eng, @db-admin, api-service, db-service, cache.
 
-AVAILABLE QUERIES:
-- @network-eng: traffic_status, latency_breakdown, error_rate, upstream_health
-- @db-admin: db_load, connection_stats, lock_status, slow_queries
-
-AVAILABLE ACTIONS:
-- @db-admin: clear_connections, restart_db, scale_db
-- system: restart(api-service), flush_cache(cache)
+AVAILABLE TOOLS (APIs):
+- get_network_latency()
+- get_error_logs()
+- get_db_metrics()
+- get_cache_status()
+- clear_db_connections()
+- restart_service(service_name)  # service_name: api-service, db-service
+- scale_service(service_name)
+- flush_cache()
 
 Respond ONLY in JSON:
 {{
   "hypothesis": "...",
   "why": "...",
-  "action_type": "delegate|restart|flush_cache",
-  "target": "@network-eng|@db-admin|api-service|cache",
-  "query": "...",
-  "delegate_action": "..."
+  "action_type": "tool_call|system_action",
+  "tool": "...",
+  "params": {{...}}
 }}"""
 
 # ── renderers ─────────────────────────────────────────────────────────────────
@@ -161,13 +161,26 @@ def build_ui(hint="", show_action_guide=False, agent_html=""):
     svcs = render_services(obs.services)
     logs = render_logs(obs.logs)
 
+    system_phase = getattr(env, "system_phase", "NORMAL")
+    phase_colors = {"NORMAL": "#4ade80", "DEGRADED": "#fbbf24", "FAILURE": "#f87171", "CHAOS": "#a78bfa", "RECOVERY": "#60a5fa"}
+    phase_c = phase_colors.get(system_phase, "#fff")
+
+    trace_html = '<div class="action-trace" style="display:flex; flex-direction:column; gap:4px;">'
+    if not state["history"]:
+        trace_html += '<div style="color:#6b7280; font-style:italic">No actions taken yet.</div>'
+    for i, act in enumerate(state["history"]):
+        trace_html += f'<div class="trace-step">Step {i+1}: <strong style="color:#93c5fd">{act}</strong></div>'
+    trace_html += '</div>'
+
     return f"""
 <div class="wrap">
 
   <div class="top-stats">
     <div class="ts-item ts-status">
-      <span class="ts-label">STATUS</span>
-      <span class="ts-val" style="color:{status_c}">{status_ic} {status_t}</span>
+      <span class="ts-label">RECOVERY STATUS</span>
+      <span class="ts-val" style="color:{phase_c}; display:flex; align-items:center; gap:8px;">
+        <span style="font-size:18px;">{'✅' if done else '⚠️'}</span> [STATE] {system_phase}
+      </span>
     </div>
     <div class="ts-divider"></div>
     <div class="ts-item">
@@ -194,13 +207,36 @@ def build_ui(hint="", show_action_guide=False, agent_html=""):
   {action_guide}
 
   <div class="grid">
+    <!-- Panel 1: System Status -->
     <div class="col-left">
-      <div class="panel-label">SERVICES</div>
+      <div class="panel-label">SYSTEM STATUS PANEL</div>
       <div class="svc-list">{svcs}</div>
     </div>
+    
+    <!-- Panel 2: Live Log Stream -->
     <div class="col-right">
-      <div class="panel-label">SYSTEM LOGS</div>
+      <div class="panel-label">LIVE LOG STREAM</div>
       <div class="log-list" id="logbox">{logs}</div>
+    </div>
+    
+    <!-- Panel 3: Action Trace -->
+    <div class="col-left" style="margin-top: 10px;">
+      <div class="panel-label">AGENT ACTION TRACE</div>
+      <div class="log-list" style="height: 160px; background: #111318; border-color: #1e2028;">
+        {trace_html}
+      </div>
+    </div>
+    
+    <!-- Panel 4: Recovery Summary -->
+    <div class="col-right" style="margin-top: 10px;">
+      <div class="panel-label">RECOVERY STATUS</div>
+      <div class="log-list" style="height: 160px; background: #111318; border-color: #1e2028; display: flex; align-items: center; justify-content: center; text-align: center;">
+        <div>
+            <div style="font-size: 32px; margin-bottom: 8px;">{'✅' if done else '⚠️'}</div>
+            <div style="font-size: 18px; font-weight: bold; color:{status_c}; margin-bottom: 4px;">{status_t}</div>
+            <div style="font-size: 13px; color: #9ca3af;">{f"System stabilized. Latency restored." if done else "Incident actively disrupting services."}</div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -213,8 +249,8 @@ def build_ui(hint="", show_action_guide=False, agent_html=""):
 EMPTY_HTML = """
 <div class="wrap empty">
   <div class="empty-inner">
-    <div class="empty-mark">⚡</div>
-    <div class="empty-heading">AUTO-SRE</div>
+    <div class="empty-mark">🌐</div>
+    <div class="empty-heading">ACRS WAR ROOM</div>
     <div class="empty-body">Select a difficulty level above and press <strong>Start / Reset</strong> to load a live cloud incident scenario.</div>
     <div class="empty-tags">
       <span class="etag etag-g">5 Complex Mult-Step Scenarios</span>
@@ -235,18 +271,22 @@ def reset_env(difficulty):
     scenario_name = env.state.get("name", "Random Incident")
     return build_ui(hint=f"Scenario loaded: {scenario_name}. Check the logs and metrics before acting.", show_action_guide=True)
 
-def do_step(action_type, target=None, query=None, delegate_action=None):
+def do_step(action_type, tool=None, params=None):
     if not state["obs"]:
         return build_ui(hint="Press Start / Reset first to load a scenario.", show_action_guide=False)
     if state["done"]:
         return build_ui(hint="Incident already resolved. Press Start / Reset to run another scenario.", show_action_guide=False)
-    obs, reward, done, _ = env.step(Action(action_type=action_type, target=target, query=query, delegate_action=delegate_action))
+    
+    if params is None:
+        params = {}
+        
+    obs, reward, done, _ = env.step(Action(action_type=action_type, tool=tool, params=params))
     state["obs"] = obs; state["reward"] += reward
     state["done"] = done; state["steps"] += 1
-    action_str = action_type
-    if delegate_action: action_str = delegate_action
-    elif query: action_str = query
-    state["history"].append(f"{action_str}({target})")
+    
+    action_str = f"{tool}"
+    state["history"].append(action_str)
+    
     if done:
         return build_ui(hint=f"Incident resolved in {state['steps']} step(s). Total reward: {state['reward']:.3f}", show_action_guide=False)
     return build_ui(hint=f"Action taken: {action_str}({target}). Check the logs and service metrics to decide your next move.", show_action_guide=False)
@@ -270,21 +310,17 @@ def llm_step(obs, last_reasoning):
         raw  = resp.choices[0].message.content.strip().replace("```json","").replace("```","").strip()
         data = json.loads(raw)
         
-        action_type = data.get("action_type", "").strip()
-        target = data.get("target", "").strip()
-        query = data.get("query", "").strip() if data.get("query") else None
-        delegate_action = data.get("delegate_action", "").strip() if data.get("delegate_action") else None
+        action_type = data.get("action_type", "")
+        tool = data.get("tool", "")
+        params = data.get("params", {})
         
-        if not query: query = None
-        if not delegate_action: delegate_action = None
-        
-        return Action(action_type=action_type, target=target, query=query, delegate_action=delegate_action), data
+        return Action(action_type=action_type, tool=tool, params=params), data
     except Exception as e: 
         print(f"LLM Parse Error: {e}")
         return None, {}
 
 def fallback(obs, difficulty):
-    return Action(action_type="delegate", target="@network-eng", query="summary")
+    return Action(action_type="tool_call", tool="get_error_logs", params={}), "Failed to parse LLM JSON — executing fallback tool."
 
 def run_agent(difficulty):
     global env
@@ -297,12 +333,17 @@ def run_agent(difficulty):
     for i in range(1, 11):
         if state["done"]: break
         action, data = llm_step(obs, last_reasoning)
-        fb = not bool(action)
-        if not action: action = fallback(obs, difficulty)
-        if len(state["history"]) >= 3 and len(set(state["history"][-3:])) == 1:
-            action, fb = fallback(obs, difficulty), True
+        if not action: 
+            action, fb_msg = fallback(obs, difficulty)
+            fb = True
+        else:
+            fb = False
 
-        action_str = f"{action.action_type}({action.target})"
+        if len(state["history"]) >= 3 and len(set(state["history"][-3:])) == 1:
+            action, fb_msg = fallback(obs, difficulty)
+            fb = True
+
+        action_str = f"{action.tool}"
         obs, reward, done, _ = env.step(action)
         state["obs"] = obs; state["reward"] += reward
         state["done"] = done; state["steps"] += 1
@@ -313,13 +354,28 @@ def run_agent(difficulty):
 
         if data and not fb:
             last_reasoning = data.get("reasoning", "")
-            detail = f"""
-<div class="ar-detail">
-  <div class="ar-row"><span class="ar-k">Root cause</span><span class="ar-v">{data.get('root_cause','')}</span></div>
-  <div class="ar-row"><span class="ar-k">Reasoning</span><span class="ar-v">{data.get('reasoning','')}</span></div>
-</div>"""
+            
+            agent_html_block = f"""
+            <div class="ar-detail">
+              <div class="ag-row">
+                  <span class="ag-lbl" style="color:#6b7280; font-size:11px; text-transform:uppercase">Tool:</span>
+                  <span class="ag-val" style="color:#fbbf24; font-family:monospace">{action.tool}</span>
+              </div>
+            """
+            if action.params:
+                agent_html_block += f"""
+              <div class="ag-row">
+                  <span class="ag-lbl" style="color:#6b7280; font-size:11px; text-transform:uppercase">Params:</span>
+                  <span class="ag-val" style="color:#a78bfa; font-family:monospace">{json.dumps(action.params)}</span>
+              </div>
+                """
+            agent_html_block += f"""
+              <div class="ar-row"><span class="ar-k">Hypothesis</span><span class="ar-v">{data.get('hypothesis','')}</span></div>
+              <div class="ar-row"><span class="ar-k">Reasoning</span><span class="ar-v">{data.get('why','')}</span></div>
+            </div>"""
+            detail = agent_html_block
         else:
-            detail = '<div class="ar-detail"><div class="ar-row"><span class="ar-k">Mode</span><span class="ar-v">Deterministic fallback agent</span></div></div>'
+            detail = '<div class="ar-detail"><div class="ar-row"><span class="ar-k">Mode</span><span class="ar-v">Deterministic fallback tool (LLM failed/looped)</span></div></div>'
 
         rows.append(f"""
 <div class="ar {'ar-resolved' if resolved else ''}">
@@ -761,12 +817,12 @@ with gr.Blocks(title="Auto-SRE") as demo:
     reset_btn.click(lambda: reset_env(None), inputs=[], outputs=[dashboard])
     agent_btn.click(lambda: run_agent(None), inputs=[], outputs=[dashboard])
     
-    query_net_btn.click(lambda: do_step("delegate", target="@network-eng", query="traffic_status"), outputs=[dashboard])
-    query_db_btn.click(lambda: do_step("delegate", target="@db-admin", query="db_load"), outputs=[dashboard])
-    clear_btn.click(lambda: do_step("delegate", target="@db-admin", delegate_action="clear_connections"), outputs=[dashboard])
-    restart_db_btn.click(lambda: do_step("delegate", target="@db-admin", delegate_action="restart_db"), outputs=[dashboard])
-    restart_api_btn.click(lambda: do_step("restart", target="api-service"), outputs=[dashboard])
-    flush_btn.click(lambda: do_step("flush_cache", target="cache"), outputs=[dashboard])
+    query_net_btn.click(lambda: do_step("tool_call", tool="get_network_latency"), outputs=[dashboard])
+    query_db_btn.click(lambda: do_step("tool_call", tool="get_db_metrics"), outputs=[dashboard])
+    clear_btn.click(lambda: do_step("tool_call", tool="clear_db_connections"), outputs=[dashboard])
+    restart_db_btn.click(lambda: do_step("system_action", tool="restart_service", params={"service":"db-service"}), outputs=[dashboard])
+    restart_api_btn.click(lambda: do_step("system_action", tool="restart_service", params={"service":"api-service"}), outputs=[dashboard])
+    flush_btn.click(lambda: do_step("system_action", tool="flush_cache"), outputs=[dashboard])
 
 
 demo.css = CSS

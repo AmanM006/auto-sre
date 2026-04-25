@@ -15,6 +15,7 @@ class AutoSREEnv:
         self.difficulty = difficulty
         self.episode_tracker = EpisodeTracker()
         self.signals_gathered = 0
+        self.system_phase = "NORMAL"
 
     def reset(self):
         # Pick one of the 5 new scenarios
@@ -26,11 +27,17 @@ class AutoSREEnv:
         self.last_score = 0.0
         self.episode_tracker = EpisodeTracker()
         self.signals_gathered = 0
+        self.system_phase = "CHAOS"
 
         # Partial observability: Start with an alert
         ts = datetime.utcnow().strftime("%H:%M:%S")
-        alert = f"[{ts}] ALERT   system: Service degradation detected. E2E Latency {self.state['latency']}ms."
+        scenario_name = self.state.get("name", "Unknown Incident")
+        print(f"\033[91m[CHAOS] Injecting scenario: {scenario_name}\033[0m")
+        alert = f"[{ts}] CRITICAL system: [CHAOS] Injecting scenario: {scenario_name}. E2E Latency {self.state['latency']}ms."
         
+        self.state["logs"].append(alert)
+        self.system_phase = "DEGRADED"
+
         return Observation(
             services={k: {"status": v["status"]} for k, v in self.state["services"].items()},
             logs=[alert],
@@ -40,6 +47,31 @@ class AutoSREEnv:
     def step(self, action: Action):
         self.episode_tracker.steps += 1
         ts = datetime.utcnow().strftime("%H:%M:%S")
+
+        # 0. TRANSLATE NEW API TOOLS TO LEGACY ACTIONS
+        if action.action_type == "tool_call":
+            if action.tool == "get_db_metrics":
+                action.target, action.query = "@db-admin", "db_load"
+            elif action.tool == "get_network_latency":
+                action.target, action.query = "@network-eng", "latency_breakdown"
+            elif action.tool == "get_error_logs":
+                action.target, action.query = "@network-eng", "error_rate"
+            elif action.tool == "get_cache_status":
+                action.target, action.query = "@db-admin", "cache_status"
+            elif action.tool == "clear_db_connections":
+                action.target, action.delegate_action = "@db-admin", "clear_connections"
+        elif action.action_type == "system_action":
+            if action.tool == "restart_service":
+                action.action_type = "restart"
+                action.target = action.params.get("service", "")
+                if action.target == "db-service":
+                    action.action_type, action.target, action.delegate_action = "delegate", "@db-admin", "restart_db"
+            elif action.tool == "scale_service":
+                action.action_type = "scale"
+                action.target = action.params.get("service", "")
+            elif action.tool == "flush_cache":
+                action.action_type = "flush_cache"
+                action.target = "cache"
 
         # 1. HANDLE DELEGATION (QUERIES)
         if action.target and action.target.startswith("@"):
@@ -91,10 +123,15 @@ class AutoSREEnv:
         if all_fixes_done and metrics_healthy:
             self.done = True
             self.episode_tracker.successful_fix = True
+            self.system_phase = "RECOVERY"
             base_reward = 1.0 if self.signals_gathered >= 2 else 0.2
             reward = base_reward + penalty
         else:
             self.done = False
+            if self.state["latency"] > 1000:
+                self.system_phase = "FAILURE"
+            else:
+                self.system_phase = "DEGRADED"
             reward = penalty - 0.05 # Step penalty
 
         self.step_count += 1
@@ -135,10 +172,15 @@ class AutoSREEnv:
             if self.state["latency"] < 200 and all(s["status"] == "running" for s in self.state["services"].values()):
                 self.done = True
                 self.episode_tracker.successful_fix = True
+                self.system_phase = "RECOVERY"
                 base_reward = 0.5 if self.signals_gathered >= 2 else 0.1
                 reward += base_reward
         else:
             self.done = False
+            if self.state["latency"] > 1000:
+                self.system_phase = "FAILURE"
+            else:
+                self.system_phase = "DEGRADED"
 
         self.step_count += 1
         self.episode_tracker.total_reward += reward
@@ -161,8 +203,14 @@ class AutoSREEnv:
             self.state["services"]["db-service"]["cpu"] -= 30
 
     def _update_metrics(self):
-        """Simulates metrics based on applied fixes."""
-        # If not all fixes applied, keep some bad metrics
+        """Dynamic metric degradation over time."""
+        for name, info in self.state["services"].items():
+            if info["status"] in ["overloaded", "degraded"]:
+                if "cpu" in info and info["cpu"] < 100:
+                    info["cpu"] = min(100, info["cpu"] + random.randint(2, 5))
+                if "latency" in info:
+                    info["latency"] += random.randint(50, 150)
+                self.state["latency"] += random.randint(50, 200)# If not all fixes applied, keep some bad metrics
         all_done = all(f in self.state["applied_fixes"] for f in self.state["required_fixes"])
         if not all_done:
             self.state["latency"] = max(300, self.state["latency"] - 100)
@@ -181,4 +229,4 @@ class AutoSREEnv:
         
     def get_state(self):
         from .models import State
-        return State(step_count=self.step_count, done=self.done)
+        return State(step_count=self.step_count, done=self.done, system_phase=self.system_phase)

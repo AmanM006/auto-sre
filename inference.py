@@ -64,44 +64,40 @@ CRITICAL RULES:
 1. GATHER SIGNALS: You MUST gather at least 2 relevant signals (queries) before applying any fix. Premature fixes are penalized (-0.2).
 2. CHAIN OF FIXES: Most incidents require a SEQUENCE of 2-3 fixes. A single action rarely resolves the issue fully.
 3. OBSERVE & PIVOT: After a partial fix, metrics may improve but the incident is not over. Re-evaluate and apply the next step.
-4. VALID TARGETS: @network-eng, @db-admin, api-service, db-service, cache.
 
-AVAILABLE QUERIES:
-- @network-eng: traffic_status, latency_breakdown, error_rate, upstream_health
-- @db-admin: db_load, connection_stats, lock_status, slow_queries
-
-AVAILABLE ACTIONS:
-- @db-admin: clear_connections, restart_db, scale_db
-- system: restart(api-service), flush_cache(cache)
+AVAILABLE TOOLS (APIs):
+- get_network_latency()
+- get_error_logs()
+- get_db_metrics()
+- get_cache_status()
+- clear_db_connections()
+- restart_service(service_name)  # service_name: api-service, db-service
+- scale_service(service_name)
+- flush_cache()
 
 Respond ONLY in JSON:
 {{
   "hypothesis": "...",
   "why": "...",
-  "action_type": "delegate|restart|flush_cache",
-  "target": "@network-eng|@db-admin|api-service|cache",
-  "query": "...",
-  "delegate_action": "..."
+  "action_type": "tool_call|system_action",
+  "tool": "...",
+  "params": {{...}}
 }}"""
 
 # ── LOGGING HELPERS ──────────────────────────────────────────────────────────
 
 def print_agent_thought(data: dict):
     """WOW-factor reasoning logs."""
-    print("\n\033[96m+-- [AI INCIDENT COMMANDER REASONING] -------------------------\033[0m")
-    print(f"\033[96m|\033[0m \033[1mHypothesis:\033[0m   {data.get('hypothesis', '')}")
-    print(f"\033[96m|\033[0m \033[1mChosen Agent:\033[0m {data.get('chosen_agent', '')}")
-    print(f"\033[96m|\033[0m \033[1mWhy:\033[0m          {data.get('why', '')}")
+    tool = data.get("tool", "")
+    params = data.get("params", {})
+    params_str = f" {params}" if params else ""
     
-    target = data.get("target") or "none"
-    action_str = f"{data.get('action_type')}({target})"
-    if data.get("query"):
-        action_str += f" query={data.get('query')}"
-    if data.get("delegate_action"):
-        action_str += f" do={data.get('delegate_action')}"
-        
-    print(f"\033[96m|\033[0m \033[1mNext Action:\033[0m  \033[93m{action_str}\033[0m")
-    print("\033[96m+--------------------------------------------------------------\033[0m\n")
+    print("\n==============================")
+    print(f"[STEP LOG]")
+    print(f"Hypothesis: {data.get('hypothesis', '')}")
+    print(f"Why:        {data.get('why', '')}")
+    print(f"Tool Used:  {tool}{params_str}")
+    print("==============================\n")
 
 
 def log_step(step, reward, total_reward, source):
@@ -123,29 +119,28 @@ def log_episode_result(ep, agent_name, info, source_majority):
     print(f"Reward: {info['total_reward']:.3f}")
     print(f"Source: {source_majority}")
     if info["success"]:
-        print("\033[92m[OK] Agent avoided blind action\033[0m")
-        print("\033[92m[OK] Gathered evidence from 2 sources\033[0m")
-        print("\033[92m[OK] Applied correct fix\033[0m")
+        print("✔ Agent avoided blind action")
+        print("✔ Gathered evidence from 2 sources")
+        print("✔ Correct fix chain applied")
+        print("✔ System recovered")
     print("")
 
 
 # ── AGENT IMPLEMENTATIONS ─────────────────────────────────────────────────────
 
 def action_to_string(action: Action) -> str:
-    target = action.target or "none"
-    action_str = f"{action.action_type}({target})"
-    if action.query: action_str += f" query={action.query}"
-    if action.delegate_action: action_str += f" do={action.delegate_action}"
-    return action_str
+    tool = action.tool or "unknown"
+    params = f" {action.params}" if action.params else ""
+    return f"{tool}{params}"
 
 
 def random_policy():
     choice = random.choice([
-        Action(action_type="restart", target="api-service"),
-        Action(action_type="scale", target="db-service"),
-        Action(action_type="flush_cache"),
-        Action(action_type="delegate", target="@network-eng", query="traffic_status"),
-        Action(action_type="delegate", target="@db-admin", query="db_load")
+        Action(action_type="system_action", tool="restart_service", params={"service":"api-service"}),
+        Action(action_type="system_action", tool="scale_service", params={"service":"db-service"}),
+        Action(action_type="system_action", tool="flush_cache", params={}),
+        Action(action_type="tool_call", tool="get_network_latency", params={}),
+        Action(action_type="tool_call", tool="get_db_metrics", params={})
     ])
     return choice, action_to_string(choice), "RANDOM"
 
@@ -155,17 +150,16 @@ def naive_baseline_agent(obs, step_count):
     # Fixed sequence: exhaustive investigation, then brute-force all fixes
     playbook = [
         # Steps 0-4: Query every possible source (wasteful but thorough)
-        Action(action_type="delegate", target="@db-admin", query="db_load"),
-        Action(action_type="delegate", target="@db-admin", query="connection_stats"),
-        Action(action_type="delegate", target="@network-eng", query="traffic_status"),
-        Action(action_type="delegate", target="@network-eng", query="latency_breakdown"),
-        Action(action_type="delegate", target="@network-eng", query="request_failures"),
+        Action(action_type="tool_call", tool="get_db_metrics", params={}),
+        Action(action_type="tool_call", tool="get_cache_status", params={}),
+        Action(action_type="tool_call", tool="get_network_latency", params={}),
+        Action(action_type="tool_call", tool="get_error_logs", params={}),
         # Steps 5-9: Try every fix (shotgun approach)
-        Action(action_type="delegate", target="@db-admin", delegate_action="clear_connections"),
-        Action(action_type="flush_cache", target="cache"),
-        Action(action_type="restart", target="api-service"),
-        Action(action_type="delegate", target="@db-admin", delegate_action="restart_db"),
-        Action(action_type="scale", target="db-service"),
+        Action(action_type="tool_call", tool="clear_db_connections", params={}),
+        Action(action_type="system_action", tool="flush_cache", params={}),
+        Action(action_type="system_action", tool="restart_service", params={"service":"api-service"}),
+        Action(action_type="system_action", tool="restart_service", params={"service":"db-service"}),
+        Action(action_type="system_action", tool="scale_service", params={"service":"db-service"}),
     ]
     idx = min(step_count, len(playbook) - 1)
     action = playbook[idx]
@@ -180,48 +174,44 @@ def fallback_policy(obs, action_history):
     api_svc = obs.services.get("api-service", {})
     
     # 1. No queries made yet -> query DB stats
-    if "query=" not in history_str:
-        return Action(action_type="delegate", target="@db-admin", query="connection_stats")
+    if "get_db_metrics" not in history_str:
+        return Action(action_type="tool_call", tool="get_db_metrics", params={})
         
     # 2. Check for DB issues
     if "exhaust" in logs_str or "overload" in logs_str or db_svc.get("latency", 0) > 1000:
-        if "do=clear_connections" not in history_str:
-            return Action(action_type="delegate", target="@db-admin", delegate_action="clear_connections")
-        if "do=restart_db" not in history_str:
-            return Action(action_type="delegate", target="@db-admin", delegate_action="restart_db")
+        if "clear_db_connections" not in history_str:
+            return Action(action_type="tool_call", tool="clear_db_connections", params={})
+        if "restart_service" not in history_str:
+            return Action(action_type="system_action", tool="restart_service", params={"service":"db-service"})
             
     # 3. Check network
     if "network" in logs_str or "Traffic" in logs_str or "timeout" in logs_str.lower():
-        if "query=traffic_status" not in history_str:
-            return Action(action_type="delegate", target="@network-eng", query="traffic_status")
+        if "get_network_latency" not in history_str:
+            return Action(action_type="tool_call", tool="get_network_latency", params={})
 
     # 4. API Down
     if db_svc.get("status") in ("running", "unknown") and api_svc.get("status") == "down":
-        if "restart(api-service)" not in history_str:
-            return Action(action_type="restart", target="api-service")
+        if "api-service" not in history_str:
+            return Action(action_type="system_action", tool="restart_service", params={"service":"api-service"})
 
     # 5. Deadlocks / High Latency but components look healthy
     if "Deadlock" in logs_str or obs.latency >= 1500:
         if "flush_cache" not in history_str:
-            return Action(action_type="flush_cache")
+            return Action(action_type="system_action", tool="flush_cache", params={})
             
     # 6. Default progression (ensure no repeats)
-    queries = [
-        ("delegate", "@db-admin", "db_load"), 
-        ("delegate", "@network-eng", "latency_breakdown"),
-        ("delegate", "@network-eng", "request_failures")
-    ]
-    for a_type, tgt, q in queries:
-        if f"query={q}" not in history_str:
-            return Action(action_type=a_type, target=tgt, query=q)
+    queries = ["get_db_metrics", "get_network_latency", "get_error_logs"]
+    for q in queries:
+        if q not in history_str:
+            return Action(action_type="tool_call", tool=q, params={})
             
     # Ultimate fallback
-    if "restart(api-service)" not in history_str:
-        return Action(action_type="restart", target="api-service")
+    if "api-service" not in history_str:
+        return Action(action_type="system_action", tool="restart_service", params={"service":"api-service"})
     elif "flush_cache" not in history_str:
-        return Action(action_type="flush_cache")
+        return Action(action_type="system_action", tool="flush_cache", params={})
     else:
-        return Action(action_type="scale", target="db-service")
+        return Action(action_type="system_action", tool="scale_service", params={"service":"db-service"})
 
 
 def _extract_json(raw: str) -> str:
@@ -268,36 +258,29 @@ def call_llm(prompt):
             if not isinstance(data, dict):
                 raise ValueError(f"LLM returned non-dict: {type(data)}")
             
-            # ── VALIDATE ACTION FIELDS (fix delegate(none) bug) ──
+            # ── VALIDATE ACTION FIELDS ──
             action_type = data.get("action_type", "").strip()
-            target = data.get("target", "").strip()
-            query = data.get("query", "").strip() if data.get("query") else None
-            delegate_action = data.get("delegate_action", "").strip() if data.get("delegate_action") else None
+            tool = data.get("tool", "").strip()
+            params = data.get("params", {})
             
-            # Clean empty strings to None
-            if not query: query = None
-            if not delegate_action: delegate_action = None
-            
-            VALID_TYPES = {"delegate", "restart", "scale", "flush_cache"}
-            VALID_TARGETS = {"@network-eng", "@db-admin", "api-service", "db-service", "cache"}
+            VALID_TYPES = {"tool_call", "system_action"}
+            VALID_TOOLS = {
+                "get_network_latency", "get_error_logs", "get_db_metrics", "get_cache_status",
+                "clear_db_connections", "restart_service", "scale_service", "flush_cache"
+            }
             
             if not action_type or action_type not in VALID_TYPES:
                 raise ValueError(f"Invalid action_type: '{action_type}'")
-            if not target or target.lower() in ("none", "null", ""):
-                raise ValueError(f"Empty/None target rejected")
-            if target not in VALID_TARGETS:
-                raise ValueError(f"Invalid target: '{target}'")
-            if action_type == "delegate" and not query and not delegate_action:
-                raise ValueError("Delegate action requires query or delegate_action")
+            if not tool or tool not in VALID_TOOLS:
+                raise ValueError(f"Invalid tool: '{tool}'")
             
             print_agent_thought(data)
             print(f"\033[90m[TOKEN {current_token_idx}] output: {json.dumps(data, default=str)}\033[0m")
 
             action = Action(
                 action_type=action_type,
-                target=target,
-                query=query,
-                delegate_action=delegate_action
+                tool=tool,
+                params=params
             )
             
             # Cache successful response
@@ -377,7 +360,7 @@ def llm_agent(obs, action_history, memory, episode_memory):
     except Exception as e:
         print(f"\033[91m[LLM ERROR] {e}.\033[0m")
         print("\033[93m[ERROR] LLM failed, skipping turn (returning dummy query)\033[0m")
-        action = Action(action_type="delegate", target="@network-eng", query="summary")
+        action = Action(action_type="tool_call", tool="get_error_logs", params={})
         source = "LLM_ERROR"
         
     return action, action_to_string(action), source
@@ -450,25 +433,25 @@ def run_loop():
                     action, action_str, source = llm_agent(obs, action_history, cross_episode_memory + retry_prompt_suffix, episode_memory)
                     retry_count += 1
                 
-                # Check for repeated query
-                if action.query:
-                    query_key = f"{action.target}:{action.query}"
+                # Check for repeated query (tool call)
+                if action.action_type == "tool_call":
+                    query_key = f"{action.tool}"
                     retry_count = 0
                     while query_key in episode_memory["queries_made"] and retry_count < max_retries:
-                        print(f"\033[33m[FILTER] Query '{action.query}' already executed. Forcing retry.\033[0m")
-                        retry_prompt_suffix = f"\n\n⚠️ You already queried '{action.query}'. Choose a DIFFERENT action or query."
+                        print(f"\033[33m[FILTER] Query '{action.tool}' already executed. Forcing retry.\033[0m")
+                        retry_prompt_suffix = f"\n\n⚠️ You already queried '{action.tool}'. Choose a DIFFERENT action or query."
                         action, action_str, source = llm_agent(obs, action_history, cross_episode_memory + retry_prompt_suffix, episode_memory)
                         retry_count += 1
-                        if action.query:
-                            query_key = f"{action.target}:{action.query}"
+                        if action.action_type == "tool_call":
+                            query_key = f"{action.tool}"
                         else:
                             break
             
             # HARD CONSTRAINT: Intercept repeated queries (penalty but still execute)
-            if action.query:
-                query_key = f"{action.target}:{action.query}"
-                if query_key in env.episode_tracker.queries_made:
-                    print(f"\033[33m[WARN] LLM repeated query '{action.query}'. (No fallback)\033[0m")
+            if action.action_type == "tool_call":
+                query_key = f"{action.tool}"
+                if query_key in episode_memory["queries_made"]:
+                    print(f"\033[33m[WARN] LLM repeated query '{action.tool}'. (Penalty applied)\033[0m")
                     total_intercept_penalty -= 0.3
                 
             action_history.append(action_str)
@@ -481,8 +464,8 @@ def run_loop():
             
             # ── UPDATE EPISODE MEMORY ───────────────────────────────────
             episode_memory["actions_taken"].append(action_str)
-            if action.query:
-                episode_memory["queries_made"].add(f"{action.target}:{action.query}")
+            if action.action_type == "tool_call":
+                episode_memory["queries_made"].add(f"{action.tool}")
             episode_memory["last_action"] = action_str
             episode_memory["step"] += 1
             
