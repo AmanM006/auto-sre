@@ -24,8 +24,6 @@ HF_TOKENS = [
     os.getenv("HF_TOKEN_4"),
     os.getenv("HF_TOKEN_5"),
     os.getenv("HF_TOKEN_6"),
-    
-
 ]
 # Filter out missing tokens and fall back to HF_TOKEN if pool is empty
 HF_TOKENS = [t for t in HF_TOKENS if t]
@@ -39,7 +37,7 @@ client = InferenceClient(
     token=HF_TOKENS[current_token_idx]
 )
 
-MODE = "llm"   # options: "random", "llm"
+MODE = "random"   # options: "random", "llm"
 USE_TRAINED_MODEL = False
 NUM_EPISODES = 20
 MAX_STEPS = 10
