@@ -289,7 +289,7 @@ def do_step(action_type, tool=None, params=None):
     
     if done:
         return build_ui(hint=f"Incident resolved in {state['steps']} step(s). Total reward: {state['reward']:.3f}", show_action_guide=False)
-    return build_ui(hint=f"Action taken: {action_str}({target}). Check the logs and service metrics to decide your next move.", show_action_guide=False)
+    return build_ui(hint=f"Action taken: {action_str}. Check the logs and service metrics to decide your next move.", show_action_guide=False)
 
 def llm_step(obs, last_reasoning):
     if not client: return None, {}
