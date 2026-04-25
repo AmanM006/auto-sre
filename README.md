@@ -1,3 +1,13 @@
+---
+title: Auto Sre Env
+emoji: 🚀
+colorFrom: blue
+colorTo: green
+sdk: streamlit
+app_file: app.py
+pinned: false
+---
+
 # 🚀 Auto-SRE: AI-Powered Cloud Debugging Environment
 
 ## 🧠 Overview
