@@ -15,6 +15,18 @@ try:
 except ImportError:
     pass
 
+try:
+    from google.colab import userdata
+    for key in ["API_BASE_URL", "MODEL_NAME", "HF_TOKEN", "HF_TOKEN_1", "HF_TOKEN_2", "HF_TOKEN_3", "HF_TOKEN_4", "HF_TOKEN_5", "HF_TOKEN_6"]:
+        try:
+            val = userdata.get(key)
+            if val:
+                os.environ[key] = val
+        except Exception:
+            pass
+except ImportError:
+    pass
+
 load_dotenv()
 
 HF_TOKENS = [
