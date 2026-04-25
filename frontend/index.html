@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACRS — Autonomous Cloud Recovery System</title>
+    <meta name="description" content="AI-powered autonomous incident recovery dashboard">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <!-- Phase Banner -->
+    <div id="phase-banner" class="phase-banner phase-normal">
+        <span id="phase-icon">&#9679;</span>
+        <span id="phase-text">SYSTEM NORMAL</span>
+    </div>
+
+    <!-- Header -->
+    <header class="header">
+        <div class="header-left">
+            <h1 class="logo">ACRS</h1>
+            <span class="logo-sub">Autonomous Cloud Recovery System</span>
+        </div>
+        <div class="header-right">
+            <div class="latency-display">
+                <span class="latency-label">E2E LATENCY</span>
+                <span id="latency-value" class="latency-value">0</span>
+                <span class="latency-unit">ms</span>
+            </div>
+            <div class="reward-display">
+                <span class="reward-label">REWARD</span>
+                <span id="reward-value" class="reward-value">0.000</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Grid -->
+    <main class="dashboard">
+        <!-- Left Column: System Status + Controls -->
+        <div class="col-left">
+            <!-- Control Panel -->
+            <section class="panel control-panel">
+                <h2 class="panel-title">COMMAND CENTER</h2>
+                <div class="control-buttons">
+                    <button id="btn-run" class="btn btn-primary" onclick="runAgent()">
+                        <span class="btn-icon">&#9654;</span> Run Agent
+                    </button>
+                    <button id="btn-step" class="btn btn-secondary" onclick="stepAgent()">
+                        <span class="btn-icon">&#9658;</span> Single Step
+                    </button>
+                    <button id="btn-reset" class="btn btn-danger" onclick="resetSystem()">
+                        <span class="btn-icon">&#8634;</span> Reset
+                    </button>
+                </div>
+                <div class="mode-toggle">
+                    <label class="toggle-label">
+                        <input type="radio" name="mode" value="autonomous" checked>
+                        <span>&#129302; Autonomous</span>
+                    </label>
+                    <label class="toggle-label">
+                        <input type="radio" name="mode" value="manual">
+                        <span>&#129504; Step-by-Step</span>
+                    </label>
+                </div>
+                <div id="scenario-name" class="scenario-badge">No incident loaded</div>
+            </section>
+
+            <!-- System Status -->
+            <section class="panel status-panel">
+                <h2 class="panel-title">SYSTEM STATUS</h2>
+                <div id="service-cards" class="service-cards">
+                    <div class="service-card" id="card-api">
+                        <div class="svc-name">api-service</div>
+                        <div class="svc-status" id="status-api">--</div>
+                        <div class="svc-metrics">
+                            <span>CPU: <b id="cpu-api">--</b>%</span>
+                            <span>MEM: <b id="mem-api">--</b>%</span>
+                        </div>
+                    </div>
+                    <div class="service-card" id="card-db">
+                        <div class="svc-name">db-service</div>
+                        <div class="svc-status" id="status-db">--</div>
+                        <div class="svc-metrics">
+                            <span>CPU: <b id="cpu-db">--</b>%</span>
+                            <span>MEM: <b id="mem-db">--</b>%</span>
+                        </div>
+                    </div>
+                    <div class="service-card" id="card-cache">
+                        <div class="svc-name">cache-service</div>
+                        <div class="svc-status" id="status-cache">--</div>
+                        <div class="svc-metrics">
+                            <span>CPU: <b id="cpu-cache">--</b>%</span>
+                            <span>MEM: <b id="mem-cache">--</b>%</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Fix Progress -->
+                <div class="fix-progress">
+                    <h3>Fix Chain Progress</h3>
+                    <div id="fix-chain" class="fix-chain"></div>
+                </div>
+            </section>
+        </div>
+
+        <!-- Center Column: Agent Trace -->
+        <div class="col-center">
+            <section class="panel trace-panel">
+                <h2 class="panel-title">AGENT TRACE</h2>
+                <div id="trace-container" class="trace-container">
+                    <div class="trace-empty">Click "Run Agent" to start autonomous recovery</div>
+                </div>
+                <!-- Recovery Summary (hidden until done) -->
+                <div id="recovery-summary" class="recovery-summary hidden">
+                    <h3 id="summary-status" class="summary-status"></h3>
+                    <div class="summary-grid">
+                        <div class="summary-item">
+                            <span class="summary-label">Scenario</span>
+                            <span id="summary-scenario" class="summary-value"></span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Signals Used</span>
+                            <span id="summary-signals" class="summary-value"></span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Fix Chain</span>
+                            <span id="summary-fixes" class="summary-value"></span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Steps Taken</span>
+                            <span id="summary-steps" class="summary-value"></span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Final Latency</span>
+                            <span id="summary-latency" class="summary-value"></span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Total Reward</span>
+                            <span id="summary-reward" class="summary-value"></span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- Right Column: Logs -->
+        <div class="col-right">
+            <section class="panel log-panel">
+                <h2 class="panel-title">LIVE LOG STREAM</h2>
+                <div id="log-container" class="log-container">
+                    <div class="log-empty">Waiting for system logs...</div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
