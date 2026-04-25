@@ -45,9 +45,8 @@ if not HF_TOKENS:
 current_token_idx = 0
 
 client = InferenceClient(
-    model=os.getenv("MODEL_NAME"),
+    base_url=os.getenv("API_BASE_URL"),
     token=HF_TOKENS[current_token_idx],
-    base_url=os.getenv("API_BASE_URL")
 )
 
 MODE = "llm"   # options: "random", "llm"
