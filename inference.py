@@ -37,7 +37,7 @@ client = InferenceClient(
     token=HF_TOKENS[current_token_idx]
 )
 
-MODE = "random"   # options: "random", "llm"
+MODE = "llm"   # options: "random", "llm"
 USE_TRAINED_MODEL = False
 NUM_EPISODES = 20
 MAX_STEPS = 10
