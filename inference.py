@@ -34,7 +34,8 @@ current_token_idx = 0
 
 client = InferenceClient(
     model=os.getenv("MODEL_NAME"),
-    token=HF_TOKENS[current_token_idx]
+    token=HF_TOKENS[current_token_idx],
+    base_url=os.getenv("API_BASE_URL")
 )
 
 MODE = "llm"   # options: "random", "llm"
@@ -334,7 +335,8 @@ def call_llm(prompt):
                 print(f"[TOKEN SWITCH] Using token index {current_token_idx}")
                 client = InferenceClient(
                     model=os.getenv("MODEL_NAME"),
-                    token=HF_TOKENS[current_token_idx]
+                    token=HF_TOKENS[current_token_idx],
+                    base_url=os.getenv("API_BASE_URL")
                 )
                 continue
             else:
