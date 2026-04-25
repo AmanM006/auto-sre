@@ -293,6 +293,7 @@ def call_llm(prompt):
         try:
             print(f"\033[90m[TOKEN {current_token_idx}] prompt hash: {prompt_hash}\033[0m")
             response = client.chat.completions.create(
+                model=os.getenv("MODEL_NAME"),
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=350,
                 temperature=0,
@@ -345,9 +346,8 @@ def call_llm(prompt):
                 current_token_idx = (current_token_idx + 1) % len(HF_TOKENS)
                 print(f"[TOKEN SWITCH] Using token index {current_token_idx}")
                 client = InferenceClient(
-                    model=os.getenv("MODEL_NAME"),
-                    token=HF_TOKENS[current_token_idx],
-                    base_url=os.getenv("API_BASE_URL")
+                    base_url=os.getenv("API_BASE_URL"),
+                    token=HF_TOKENS[current_token_idx]
                 )
                 continue
             else:
