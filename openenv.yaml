@@ -1,0 +1,16 @@
+name: auto-sre-env
+version: "1.0.0"
+description: AI-powered SRE environment for debugging cloud-native systems
+
+entrypoint: server:app
+
+models:
+  action: Action
+  observation: Observation
+  state: State
+
+endpoints:
+  reset: /reset
+  step: /step
+  state: /state
+  health: /health

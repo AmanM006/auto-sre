@@ -1,0 +1,19 @@
+[project]
+name = "auto-sre-env"
+version = "0.1.0"
+description = "Auto-SRE OpenEnv environment"
+authors = [{ name = "Aman" }]
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "python-dotenv",
+    "openai",
+    "openenv-core>=0.2.0"
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[tool.openenv]
+entrypoint = "server.app:main"
