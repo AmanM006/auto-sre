@@ -102,74 +102,102 @@ Auto-SRE follows the **OpenEnv** standard:
 ```json
 {
   "services": {
-    "api-service": {"status": "down", "cpu": 0, "memory": 0, "latency": 0},
-    "db-service": {"status": "running", "cpu": 40, "memory": 55, "latency": 12}
+    "api-service": { "status": "down", "cpu": 0, "latency": 0 },
+    "db-service":  { "status": "running", "cpu": 85, "latency": 120 }
   },
-  "logs": [...],
-  "latency": 1500
+  "logs": ["..."],
+  "latency": 2400
 }
 ```
 
-### Available Actions
-| Action | Target | Description |
-| :--- | :--- | :--- |
-| `restart` | `api-service` | Restart the API service |
-| `scale` | `db-service` | Scale database resources |
-| `flush_cache` | `none` | Clear the system cache |
+---
 
-### Reward System
-* **1.0** → Fully resolved
-* **0.5** → Partially resolved
-* **0.0** → Unresolved / No improvement
+## 🎯 Reward System
 
-> **Note:** Reward is incremental and reflects progress toward resolution.
+### Positive Rewards
+
+| Event | Reward |
+|---|---|
+| Full resolution | +1.0 |
+| Useful new query | +0.3 |
+| Efficient resolution bonus | +0.5 |
+
+### Penalties
+
+| Event | Penalty |
+|---|---|
+| Premature fix (before sufficient signals) | −0.5 |
+| Repeated query | −0.2 |
+| Ineffective action | −0.5 |
+| Per-step time penalty | −0.05 |
+
+> **Key principle:** Fast guessing scores lower than a correct reasoning sequence.
 
 ---
 
-## 📊 Baseline Scores
+## 🧪 Baseline Performance
 
-Running the default agent (`Qwen/Qwen3-VL-30B-A3B-Instruct`) via `inference.py` yields the following reproducible baseline scores across the three difficulties:
+### 🎲 Random Policy
+- **Steps:** ~10–12
+- **Reward:** Highly negative
+- **Behavior:** Fails due to dependency chains
 
-* **Easy (API Failure):** 0.85 (Resolved in 1 step)
-* **Medium (Cache Degradation):** 0.99 (Resolved in 1 step)
-* **Hard (Cascading Failure):** 0.424 (Resolved in 2 steps)
-  
+### 🤖 Base LLM Agent (no RL)
+- **Steps:** 6–9
+- **Reward:** Mixed / often negative
+- **Behavior:** Gathers signals correctly, but struggles with action ordering, repeats ineffective fixes, and fails to optimize sequences
+
+> **Key insight:** Even with structured reasoning, the LLM cannot consistently solve multi-step dependencies — establishing the need for reinforcement learning.
+
 ---
 
-## 🤖 Agent Support
-* OpenAI / Azure OpenAI (when available)
-* LLM-based agent via Hugging Face router
-* **Deterministic fallback agent:** (Default) ensures reproducibility if LLM fails.
+## 🚀 RL Objective
+
+Train an agent to:
+
+- Minimize steps from 6–9 down to 3–5
+- Avoid repeated or ineffective actions
+- Learn optimal fix sequences
+- Maximize cumulative reward
 
 ---
 
-## 🛠️ Usage Instructions
+## 🧪 Environment Specification
 
-### Inference Script
-Run locally to execute tasks using an agent and produce reproducible results:
+Auto-SRE follows the OpenEnv standard:
+
+| Method | Description |
+|---|---|
+| `reset()` | Initialize a new incident scenario |
+| `step(action)` | Execute action → returns `(observation, reward, done, info)` |
+| `get_state()` | Returns full internal environment state |
+
+---
+
+## 🛠️ Usage
+
+**Run inference:**
 ```bash
 python inference.py
 ```
 
-### Deployment
-**Run locally (FastAPI):**
+**Run the API server:**
 ```bash
 uvicorn auto_sre_env.server:app --reload
 ```
 
-**Run locally (App):**
+**Run the UI:**
 ```bash
 python app.py
 ```
 
-**Docker Deployment:**
+**Docker:**
 ```bash
 docker build -t auto-sre .
 docker run -p 7860:7860 auto-sre
 ```
 
-### ✅ Validation
-Run the following to check environment structure, API compliance, and grader correctness:
+**Validate the environment:**
 ```bash
 openenv validate
 ```
@@ -177,25 +205,40 @@ openenv validate
 ---
 
 ## 📦 Project Structure
-```text
 .
-├── app.py                 # Application entry point
-├── inference.py           # Agent evaluation script
-├── auto_sre_env/
-│   ├── environment.py     # Core environment
-│   ├── models.py          # Action/Observation models
-│   ├── server.py          # FastAPI endpoints
-│   └── tasks.py           # Task definitions + graders
+├── app.py
+├── inference.py
 ├── openenv.yaml
-├── pyproject.toml
 ├── Dockerfile
-└── requirements.txt
-```
+├── requirements.txt
+└── auto_sre_env/
+├── environment.py
+├── dependency_graph.py
+├── log_generator.py
+├── models.py
+├── server.py
+├── tasks.py
+└── grader.py
 
 ---
 
 ## 🏁 Key Highlights
-* **Fully OpenEnv compliant** ✅
-* **Deterministic + reproducible evaluation** ✅
-* **Supports multiple AI agents** (OpenAI/HF/Fallback) ✅
-* **Real-world system simulation** ✅
+
+- ✅ Multi-agent interaction environment
+- ✅ Partial observability (POMDP)
+- ✅ Multi-step dependency resolution
+- ✅ No reward hacking or shortcuts
+- ✅ RL-ready training environment
+- ✅ Real-world SRE simulation
+
+---
+
+## 🧠 Final Insight
+
+This environment transforms LLM reasoning from static pattern matching into **dynamic, sequential decision-making under uncertainty** — the core challenge that reinforcement learning is built to solve.
+
+---
+
+## 📄 License
+
+MIT
