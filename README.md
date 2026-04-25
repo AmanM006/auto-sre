@@ -8,124 +8,212 @@ app_file: app.py
 pinned: false
 ---
 
-# 🚀 Auto-SRE: AI-Powered Cloud Debugging Environment
+# 🚀 Auto-SRE: AI-Powered Cloud Incident Response Environment
 
 ## 🧠 Overview
-Auto-SRE is an OpenEnv-compatible reinforcement learning environment that simulates real-world cloud infrastructure failures. It enables AI agents to diagnose and resolve production incidents using logs, metrics, and structured actions.
 
-The system is designed to mimic real SRE workflows — identifying root causes, applying fixes, and stabilizing distributed systems.
+**Auto-SRE** is an advanced **OpenEnv-compatible reinforcement learning environment** that simulates real-world cloud infrastructure failures. It is designed to train AI agents to act as **Incident Commanders** — diagnosing and resolving production outages through multi-step reasoning, sequential dependency resolution, and adaptation to noisy, ambiguous signals.
 
----
+Unlike traditional environments, the agent must **investigate → reason → act → adapt**, just like a real SRE team.
 
-## 🚀 Live Demo
-👉 [https://mishface123-auto-sre-env.hf.space](https://mishface123-auto-sre-env.hf.space)
+🌐 **Live Demo:** https://mishface123-auto-sre-env.hf.space
 
 ---
 
-## ⚙️ Features
-* 🧩 **Multi-level incident scenarios** (easy, medium, hard)
-* 📊 **Realistic system state** and service metrics (CPU, memory, latency)
-* 📜 **Dynamic logs** simulating production failures
-* 🎯 **Deterministic grading system** (0.0 → 1.0 scoring)
-* 🤖 **LLM-powered agent** (OpenAI-compatible / Hugging Face router)
-* 🔁 **Reproducible evaluation** via deterministic fallback agent
+## ⚙️ Core Features
+
+### 🧩 Multi-Step Incident Resolution
+
+Incidents require 2–3 sequential fixes in the correct order:
+clear_connections → restart_db → restart_api
+
+Wrong order leads to partial or no recovery.
 
 ---
 
-## 🎮 Tasks
+### 🧠 Multi-Agent Interaction
 
-### 🟢 Easy — API Failure
-* **Issue:** API service is down due to failed health checks.
-* **Objective:** Restart the failed API service and restore availability.
+The primary agent (Incident Commander) cannot directly access all information. It must **delegate queries** to specialized sub-agents:
 
-### 🟡 Medium — Cache Degradation
-* **Issue:** High latency caused by an overloaded database or cache failure.
-* **Objective:** Identify the bottleneck and reduce latency.
+| Sub-Agent | Capability |
+|---|---|
+| `@db-admin` | Database metrics, connections, query stats |
+| `@network-eng` | Latency, traffic, upstream health |
 
-### 🔴 Hard — Cascading Failure
-* **Issue:** Database overload leads to an API crash.
-* **Objective:** Resolve the multi-service dependency failure in the correct order.
+---
+
+### 🌫️ Partial Observability
+
+The agent starts with incomplete information — metrics are masked or noisy, logs are ambiguous, and the root cause is hidden. The agent must **query strategically** to gather signals before acting.
+
+---
+
+### 🔀 Stochastic Noise
+
+All system metrics include ±15% noise — CPU, latency, and error rates all fluctuate. This prevents simple threshold-based decision-making and forces genuine reasoning.
+
+---
+
+### ⚠️ Misleading Signals
+
+Logs represent symptoms, not causes. A log like `"API timeout detected"` may be caused by a DB deadlock or a network failure — the agent must trace back to the real root cause.
+
+---
+
+### 🔗 Dependency Chains
+
+Failures propagate across services:
+DB overload → Cache inconsistency → API crash
+
+This requires multi-stage reasoning and correct fix sequencing.
+
+---
+
+### 🎲 Multiple Scenarios
+
+The environment randomly samples from five failure scenarios:
+
+1. Cascading DB Failure
+2. Stale Cache Inconsistency
+3. Network Latency Storm
+4. Distributed Deadlock
+5. Hybrid Multi-Failure Scenario
+
+---
+
+### 🔒 No Shortcut Solving
+
+- No auto-force fixes
+- No fallback overrides
+- No single-step resolution
+
+Success only if the agent executes the **full correct sequence**.
+
+---
+
+## 🎮 Action Space
+
+### System Actions
+
+| Action | Target | Description |
+|---|---|---|
+| `restart` | `api-service` | Restart the API service |
+| `scale` | `db-service` | Scale up the database |
+| `flush_cache` | `none` | Clear the cache layer |
+
+### Delegation Actions
+
+```json
+{
+  "action_type": "delegate",
+  "target": "@db-admin",
+  "query": "connection_stats"
+}
+```
+
+---
+
+## 📊 Observation Space
+
+```json
+{
+  "services": {
+    "api-service": { "status": "down", "cpu": 0, "latency": 0 },
+    "db-service":  { "status": "running", "cpu": 85, "latency": 120 }
+  },
+  "logs": ["..."],
+  "latency": 2400
+}
+```
+
+---
+
+## 🎯 Reward System
+
+### Positive Rewards
+
+| Event | Reward |
+|---|---|
+| Full resolution | +1.0 |
+| Useful new query | +0.3 |
+| Efficient resolution bonus | +0.5 |
+
+### Penalties
+
+| Event | Penalty |
+|---|---|
+| Premature fix (before sufficient signals) | −0.5 |
+| Repeated query | −0.2 |
+| Ineffective action | −0.5 |
+| Per-step time penalty | −0.05 |
+
+> **Key principle:** Fast guessing scores lower than a correct reasoning sequence.
+
+---
+
+## 🧪 Baseline Performance
+
+### 🎲 Random Policy
+- **Steps:** ~10–12
+- **Reward:** Highly negative
+- **Behavior:** Fails due to dependency chains
+
+### 🤖 Base LLM Agent (no RL)
+- **Steps:** 6–9
+- **Reward:** Mixed / often negative
+- **Behavior:** Gathers signals correctly, but struggles with action ordering, repeats ineffective fixes, and fails to optimize sequences
+
+> **Key insight:** Even with structured reasoning, the LLM cannot consistently solve multi-step dependencies — establishing the need for reinforcement learning.
+
+---
+
+## 🚀 RL Objective
+
+Train an agent to:
+
+- Minimize steps from 6–9 down to 3–5
+- Avoid repeated or ineffective actions
+- Learn optimal fix sequences
+- Maximize cumulative reward
 
 ---
 
 ## 🧪 Environment Specification
-Auto-SRE follows the **OpenEnv** standard:
-* `reset()` → initializes environment
-* `step(action)` → returns `(observation, reward, done, info)`
-* `get_state()` → returns current system state
 
-### Observation State
-```json
-{
-  "services": {
-    "api-service": {"status": "down", "cpu": 0, "memory": 0, "latency": 0},
-    "db-service": {"status": "running", "cpu": 40, "memory": 55, "latency": 12}
-  },
-  "logs": [...],
-  "latency": 1500
-}
-```
+Auto-SRE follows the OpenEnv standard:
 
-### Available Actions
-| Action | Target | Description |
-| :--- | :--- | :--- |
-| `restart` | `api-service` | Restart the API service |
-| `scale` | `db-service` | Scale database resources |
-| `flush_cache` | `none` | Clear the system cache |
-
-### Reward System
-* **1.0** → Fully resolved
-* **0.5** → Partially resolved
-* **0.0** → Unresolved / No improvement
-
-> **Note:** Reward is incremental and reflects progress toward resolution.
+| Method | Description |
+|---|---|
+| `reset()` | Initialize a new incident scenario |
+| `step(action)` | Execute action → returns `(observation, reward, done, info)` |
+| `get_state()` | Returns full internal environment state |
 
 ---
 
-## 📊 Baseline Scores
+## 🛠️ Usage
 
-Running the default agent (`Qwen/Qwen3-VL-30B-A3B-Instruct`) via `inference.py` yields the following reproducible baseline scores across the three difficulties:
-
-* **Easy (API Failure):** 0.85 (Resolved in 1 step)
-* **Medium (Cache Degradation):** 0.99 (Resolved in 1 step)
-* **Hard (Cascading Failure):** 0.424 (Resolved in 2 steps)
-  
----
-
-## 🤖 Agent Support
-* OpenAI / Azure OpenAI (when available)
-* LLM-based agent via Hugging Face router
-* **Deterministic fallback agent:** (Default) ensures reproducibility if LLM fails.
-
----
-
-## 🛠️ Usage Instructions
-
-### Inference Script
-Run locally to execute tasks using an agent and produce reproducible results:
+**Run inference:**
 ```bash
 python inference.py
 ```
 
-### Deployment
-**Run locally (FastAPI):**
+**Run the API server:**
 ```bash
 uvicorn auto_sre_env.server:app --reload
 ```
 
-**Run locally (App):**
+**Run the UI:**
 ```bash
 python app.py
 ```
 
-**Docker Deployment:**
+**Docker:**
 ```bash
 docker build -t auto-sre .
 docker run -p 7860:7860 auto-sre
 ```
 
-### ✅ Validation
-Run the following to check environment structure, API compliance, and grader correctness:
+**Validate the environment:**
 ```bash
 openenv validate
 ```
@@ -133,25 +221,40 @@ openenv validate
 ---
 
 ## 📦 Project Structure
-```text
 .
-├── app.py                 # Application entry point
-├── inference.py           # Agent evaluation script
-├── auto_sre_env/
-│   ├── environment.py     # Core environment
-│   ├── models.py          # Action/Observation models
-│   ├── server.py          # FastAPI endpoints
-│   └── tasks.py           # Task definitions + graders
+├── app.py
+├── inference.py
 ├── openenv.yaml
-├── pyproject.toml
 ├── Dockerfile
-└── requirements.txt
-```
+├── requirements.txt
+└── auto_sre_env/
+├── environment.py
+├── dependency_graph.py
+├── log_generator.py
+├── models.py
+├── server.py
+├── tasks.py
+└── grader.py
 
 ---
 
 ## 🏁 Key Highlights
-* **Fully OpenEnv compliant** ✅
-* **Deterministic + reproducible evaluation** ✅
-* **Supports multiple AI agents** (OpenAI/HF/Fallback) ✅
-* **Real-world system simulation** ✅
+
+- ✅ Multi-agent interaction environment
+- ✅ Partial observability (POMDP)
+- ✅ Multi-step dependency resolution
+- ✅ No reward hacking or shortcuts
+- ✅ RL-ready training environment
+- ✅ Real-world SRE simulation
+
+---
+
+## 🧠 Final Insight
+
+This environment transforms LLM reasoning from static pattern matching into **dynamic, sequential decision-making under uncertainty** — the core challenge that reinforcement learning is built to solve.
+
+---
+
+## 📄 License
+
+MIT
