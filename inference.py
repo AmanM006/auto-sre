@@ -556,11 +556,15 @@ def run_loop():
         plt.ylabel("Total Reward")
         plt.grid()
         plt.savefig(f"{MODE}_reward_curve.png")
-        plt.show()
+        
         try:
+            # In Colab/Jupyter, show the image manually and close the plot 
+            # to prevent Matplotlib from auto-rendering a duplicate.
             display(Image(f"{MODE}_reward_curve.png"))
+            plt.close()
         except NameError:
-            pass
+            # Fallback for standard terminals
+            plt.show()
 
         print("\nDisplaying: Steps vs Episode")
         plt.figure()
@@ -570,11 +574,12 @@ def run_loop():
         plt.ylabel("Steps Taken")
         plt.grid()
         plt.savefig(f"{MODE}_steps_curve.png")
-        plt.show()
+        
         try:
             display(Image(f"{MODE}_steps_curve.png"))
+            plt.close()
         except NameError:
-            pass
+            plt.show()
         
         print(f">>> Saved '{MODE}_reward_curve.png' and '{MODE}_steps_curve.png' to current directory.")
     except Exception as e:
