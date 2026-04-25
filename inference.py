@@ -18,6 +18,9 @@ HF_TOKENS = [
     os.getenv("HF_TOKEN_3"),
     os.getenv("HF_TOKEN_4"),
     os.getenv("HF_TOKEN_5"),
+    os.getenv("HF_TOKEN_6"),
+    
+
 ]
 # Filter out missing tokens and fall back to HF_TOKEN if pool is empty
 HF_TOKENS = [t for t in HF_TOKENS if t]
@@ -31,7 +34,7 @@ client = InferenceClient(
     token=HF_TOKENS[current_token_idx]
 )
 
-MODE = "random"   # options: "random", "llm"
+MODE = "llm"   # options: "random", "llm"
 USE_TRAINED_MODEL = False
 NUM_EPISODES = 20
 MAX_STEPS = 10
@@ -119,10 +122,10 @@ def log_episode_result(ep, agent_name, info, source_majority):
     print(f"Reward: {info['total_reward']:.3f}")
     print(f"Source: {source_majority}")
     if info["success"]:
-        print("✔ Agent avoided blind action")
-        print("✔ Gathered evidence from 2 sources")
-        print("✔ Correct fix chain applied")
-        print("✔ System recovered")
+        print("[OK] Agent avoided blind action")
+        print("[OK] Gathered evidence from 2 sources")
+        print("[OK] Correct fix chain applied")
+        print("[OK] System recovered")
     print("")
 
 
@@ -423,36 +426,17 @@ def run_loop():
             
             # ── ACTION FILTERING LAYER ──────────────────────────────────
             if MODE == "llm" and source == "LLM":
-                max_retries = 2
-                retry_count = 0
-                
                 # Check for repeated action
-                while action_str in episode_memory["actions_taken"] and retry_count < max_retries:
-                    print(f"\033[33m[FILTER] Action '{action_str}' already taken. Forcing retry.\033[0m")
-                    retry_prompt_suffix = f"\n\n⚠️ You repeated an action: '{action_str}'. This action was ALREADY taken. Choose a DIFFERENT action."
-                    action, action_str, source = llm_agent(obs, action_history, cross_episode_memory + retry_prompt_suffix, episode_memory)
-                    retry_count += 1
+                if action_str in episode_memory["actions_taken"]:
+                    print(f"\033[33m[WARN] LLM repeated action '{action_str}'. (Penalty applied)\033[0m")
+                    total_intercept_penalty -= 0.2
                 
                 # Check for repeated query (tool call)
-                if action.action_type == "tool_call":
+                elif action.action_type == "tool_call":
                     query_key = f"{action.tool}"
-                    retry_count = 0
-                    while query_key in episode_memory["queries_made"] and retry_count < max_retries:
-                        print(f"\033[33m[FILTER] Query '{action.tool}' already executed. Forcing retry.\033[0m")
-                        retry_prompt_suffix = f"\n\n⚠️ You already queried '{action.tool}'. Choose a DIFFERENT action or query."
-                        action, action_str, source = llm_agent(obs, action_history, cross_episode_memory + retry_prompt_suffix, episode_memory)
-                        retry_count += 1
-                        if action.action_type == "tool_call":
-                            query_key = f"{action.tool}"
-                        else:
-                            break
-            
-            # HARD CONSTRAINT: Intercept repeated queries (penalty but still execute)
-            if action.action_type == "tool_call":
-                query_key = f"{action.tool}"
-                if query_key in episode_memory["queries_made"]:
-                    print(f"\033[33m[WARN] LLM repeated query '{action.tool}'. (Penalty applied)\033[0m")
-                    total_intercept_penalty -= 0.3
+                    if query_key in episode_memory["queries_made"]:
+                        print(f"\033[33m[WARN] LLM repeated query '{action.tool}'. (Penalty applied)\033[0m")
+                        total_intercept_penalty -= 0.2
                 
             action_history.append(action_str)
             if source in source_counts:
@@ -486,7 +470,7 @@ def run_loop():
         log_episode_result(ep, "LLMAgent", info, majority_source)
         
         if info.get("success"):
-            print(f"\033[1;92m✓ Agent solved '{scenario_name}' scenario\033[0m")
+            print(f"\033[1;92m[OK] Agent solved '{scenario_name}' scenario\033[0m")
             
         episode_metrics.append({
             "reward": info['total_reward'],
@@ -521,7 +505,7 @@ def run_loop():
         print(f"Episode last steps: {last_steps}")
         if first_steps > 0:
             reduction = ((first_steps - last_steps) / first_steps) * 100
-            print(f"\033[1;93m↓ {reduction:.0f}% reduction in steps\033[0m\n")
+            print(f"\033[1;93m[-] {reduction:.0f}% reduction in steps\033[0m\n")
 
     print(f"Avg Reward: {sum(rewards)/len(rewards):.2f}")
     print(f"Avg Steps: {sum(steps_list)/len(steps_list):.2f}")

@@ -14,7 +14,7 @@ class AutoSREEnv:
         self.last_score = 0.0
         self.difficulty = difficulty
         self.episode_tracker = EpisodeTracker()
-        self.signals_gathered = 0
+        self.signals_gathered = set()
         self.system_phase = "NORMAL"
 
     def reset(self):
@@ -26,7 +26,7 @@ class AutoSREEnv:
         self.step_count = 0
         self.last_score = 0.0
         self.episode_tracker = EpisodeTracker()
-        self.signals_gathered = 0
+        self.signals_gathered = set()
         self.system_phase = "CHAOS"
 
         # Partial observability: Start with an alert
@@ -76,18 +76,12 @@ class AutoSREEnv:
         # 1. HANDLE DELEGATION (QUERIES)
         if action.target and action.target.startswith("@"):
             if not action.delegate_action:
-                self.signals_gathered += 1
+                self.signals_gathered.add(action.query)
             return self._handle_delegation(action)
 
         # 2. HANDLE FIXES
         is_fix = action.action_type in ["restart", "scale", "flush_cache"]
         
-        # PENALTY: Fix before collecting 2 signals
-        penalty = 0.0
-        if is_fix and self.signals_gathered < 2:
-            penalty = -0.5
-            self.state["logs"].append(f"[{ts}] WARN    judge: PREMATURE FIX ATTEMPTED (-0.5). Not enough diagnostics gathered.")
-
         # EXECUTE FIX LOGIC
         fix_key = action.delegate_action or action.action_type
         if action.action_type == "restart" and action.target == "api-service":
@@ -99,16 +93,27 @@ class AutoSREEnv:
         elif action.action_type == "restart" and action.target == "db-service":
             fix_key = "restart_db"
             
-        # Check if fix is in required list
-        if fix_key in self.state["required_fixes"]:
-            # Check dependency: can't restart API if DB is still overloaded
-            if fix_key == "restart_api" and ("restart_db" in self.state["required_fixes"] and "restart_db" not in self.state["applied_fixes"]):
-                self.state["logs"].append(f"[{ts}] ERROR   api-service: restart failed — backend DB still unstable")
-            else:
-                if fix_key not in self.state["applied_fixes"]:
-                    self.state["applied_fixes"].append(fix_key)
-                    self.state["logs"].append(f"[{ts}] INFO    system: applied fix '{fix_key}' — metrics stabilizing...")
-                    self._apply_partial_effect(fix_key)
+        penalty = 0.0
+        if is_fix or fix_key in self.state["required_fixes"]:
+            if fix_key in self.state["required_fixes"]:
+                req_idx = self.state["required_fixes"].index(fix_key)
+                prior_fixes = self.state["required_fixes"][:req_idx]
+                missing_deps = [f for f in prior_fixes if f not in self.state["applied_fixes"]]
+                
+                if missing_deps:
+                    penalty = -0.3
+                    self.state["logs"].append(f"[{ts}] ERROR   system: fix '{fix_key}' failed (-0.3). Missing prerequisites: {missing_deps}")
+                else:
+                    if len(self.signals_gathered) < 2:
+                        penalty = -0.3
+                        if fix_key not in self.state["applied_fixes"]:
+                            self.state["applied_fixes"].append(fix_key)
+                            self.state["logs"].append(f"[{ts}] WARN    system: PREMATURE FIX '{fix_key}' (-0.3). Reduced effectiveness.")
+                    else:
+                        if fix_key not in self.state["applied_fixes"]:
+                            self.state["applied_fixes"].append(fix_key)
+                            self.state["logs"].append(f"[{ts}] INFO    system: applied fix '{fix_key}' — metrics stabilizing...")
+                            self._apply_partial_effect(fix_key)
 
         # 3. UPDATE STATE & PROPAGATE
         # (Simplified propagation for the new logic)
@@ -124,7 +129,7 @@ class AutoSREEnv:
             self.done = True
             self.episode_tracker.successful_fix = True
             self.system_phase = "RECOVERY"
-            base_reward = 1.0 if self.signals_gathered >= 2 else 0.2
+            base_reward = 1.0 if len(self.signals_gathered) >= 2 else 0.2
             reward = base_reward + penalty
         else:
             self.done = False
@@ -152,18 +157,30 @@ class AutoSREEnv:
         self.state["logs"].append(f"[{ts}] INFO    {response.agent}: {response.message}")
         
         penalty = 0.0
-        if action.delegate_action and self.signals_gathered < 2:
-            penalty = -0.5
-            self.state["logs"].append(f"[{ts}] WARN    judge: PREMATURE FIX ATTEMPTED (-0.5). Not enough diagnostics gathered.")
-            
-        reward = -0.05 + penalty # Base step penalty
-        if novelty: reward += 0.1 # Reward for new info
         
         # Check if sub-agent mutation (e.g. clear_connections) happened
         if action.delegate_action and action.delegate_action in self.state["required_fixes"]:
-            if action.delegate_action not in self.state["applied_fixes"]:
-                self.state["applied_fixes"].append(action.delegate_action)
-                self._apply_partial_effect(action.delegate_action)
+            fix_key = action.delegate_action
+            req_idx = self.state["required_fixes"].index(fix_key)
+            prior_fixes = self.state["required_fixes"][:req_idx]
+            missing_deps = [f for f in prior_fixes if f not in self.state["applied_fixes"]]
+            
+            if missing_deps:
+                penalty = -0.3
+                self.state["logs"].append(f"[{ts}] ERROR   system: fix '{fix_key}' failed (-0.3). Missing prerequisites: {missing_deps}")
+            else:
+                if len(self.signals_gathered) < 2:
+                    penalty = -0.3
+                    if fix_key not in self.state["applied_fixes"]:
+                        self.state["applied_fixes"].append(fix_key)
+                        self.state["logs"].append(f"[{ts}] WARN    system: PREMATURE FIX '{fix_key}' (-0.3). Reduced effectiveness.")
+                else:
+                    if fix_key not in self.state["applied_fixes"]:
+                        self.state["applied_fixes"].append(fix_key)
+                        self._apply_partial_effect(fix_key)
+                        
+        reward = -0.05 + penalty # Base step penalty
+        if novelty: reward += 0.1 # Reward for new info
         
         # Check done condition after delegation too
         all_fixes_done = all(f in self.state["applied_fixes"] for f in self.state["required_fixes"])
@@ -173,7 +190,7 @@ class AutoSREEnv:
                 self.done = True
                 self.episode_tracker.successful_fix = True
                 self.system_phase = "RECOVERY"
-                base_reward = 0.5 if self.signals_gathered >= 2 else 0.1
+                base_reward = 0.5 if len(self.signals_gathered) >= 2 else 0.1
                 reward += base_reward
         else:
             self.done = False
