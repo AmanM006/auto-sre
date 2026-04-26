@@ -1,2 +1,4 @@
 learning_curve.png filter=lfs diff=lfs merge=lfs -text
 output.txt filter=lfs diff=lfs merge=lfs -text
+*.jsonl filter=lfs diff=lfs merge=lfs -text
+images/*.png filter=lfs diff=lfs merge=lfs -text
