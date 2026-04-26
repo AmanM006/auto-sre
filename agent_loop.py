@@ -9,6 +9,7 @@ import os
 import json
 import time
 import hashlib
+import threading
 import re
 import json_repair
 from datetime import datetime
@@ -35,26 +36,47 @@ except ImportError:
 
 load_dotenv()
 
-# ── Token pool ───────────────────────────────────────────────────────────────
+# ── Token pool (thread-safe) ─────────────────────────────────────────────────
 
-HF_TOKENS = [os.getenv(f"HF_TOKEN_{i}") for i in range(1, 7)]
-HF_TOKENS = [t for t in HF_TOKENS if t]
+# Priority: HF_TOKENS comma-separated > HF_TOKEN_1..6 > HF_TOKEN
+_comma_tokens = os.getenv("HF_TOKENS", "")
+if _comma_tokens:
+    HF_TOKENS = [t.strip() for t in _comma_tokens.split(",") if t.strip()]
+else:
+    HF_TOKENS = [os.getenv(f"HF_TOKEN_{i}") for i in range(1, 7)]
+    HF_TOKENS = [t for t in HF_TOKENS if t]
 if not HF_TOKENS:
     HF_TOKENS = [os.getenv("HF_TOKEN")]
 
-current_token_idx = 0
+_token_lock = threading.Lock()
+_token_idx = 0
 
-client = InferenceClient(
-    base_url=os.getenv("API_BASE_URL"),
-    token=HF_TOKENS[current_token_idx],
-)
+def get_next_token() -> str:
+    """Return the next token using thread-safe round-robin."""
+    global _token_idx
+    with _token_lock:
+        token = HF_TOKENS[_token_idx % len(HF_TOKENS)]
+        _token_idx += 1
+    return token
+
+def _make_client(token: str = None) -> InferenceClient:
+    """Create an InferenceClient with the given or next-rotated token."""
+    if token is None:
+        token = get_next_token()
+    return InferenceClient(
+        base_url=os.getenv("API_BASE_URL"),
+        token=token,
+    )
+
+# Default client for single-threaded usage (server, CLI)
+client = _make_client(HF_TOKENS[0])
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
 MAX_STEPS = 10
 STEP_DELAY = 0.5  # seconds — makes the agent feel like it's actually thinking
 
-AGENT_PROMPT = DIAGNOSIS_PROMPT = """You are an SRE Incident Commander restoring a failing system.
+AGENT_PROMPT = """You are an SRE Incident Commander restoring a failing system.
 
 CURRENT STATE:
 {services}
@@ -66,23 +88,23 @@ ACTIONS ALREADY TAKEN (DO NOT REPEAT THESE):
 {history}
 
 CRITICAL RULES:
-1. MAX 2 DIAGNOSTIC QUERIES. After 2 queries, you MUST use a fix (system_action).
-2. NEVER output an action that is in the "ACTIONS ALREADY TAKEN" list.
-3. READ THE LOGS: If you see "Missing prerequisites: ['some_fix']", execute that exact fix next.
+1. YOU MUST GATHER AT LEAST 2 DIAGNOSTIC SIGNALS (tool_call) BEFORE APPLYING ANY FIX (system_action). 
+   Fixes applied without diagnostics will FAIL or be ineffective.
+2. USE THE DEPENDENCY CHAINS BELOW. Skipping steps or doing them in the wrong order will fail.
+3. If logs show "Missing prerequisites", you MUST execute those first.
 
-STRICT DEPENDENCY CHAINS (Execute sequentially step-by-step):
-- DB OVERLOAD / CASCADING DB / DEADLOCK: 
-  Step A: scale_service(service="db-service")
-  Step B: clear_db_connections()
-  Step C: restart_service(service="db-service")
-  Step D: restart_service(service="api-service")
+STRICT DEPENDENCY CHAINS:
+- DB OVERLOAD / DEADLOCK: 
+  1. get_db_metrics() AND get_error_logs()
+  2. scale_service(service="db-service")
+  3. clear_db_connections()
+  4. restart_service(service="db-service")
+  5. restart_service(service="api-service")
 
 - NETWORK / CACHE STORM: 
-  Step A: flush_cache()
-  Step B: restart_service(service="api-service")
-
-- HYBRID FAILURE: 
-  Execute DB chain, then Cache chain.
+  1. get_network_latency() AND get_cache_status()
+  2. flush_cache()
+  3. restart_service(service="api-service")
 
 AVAILABLE TOOLS:
 - get_network_latency()
@@ -96,11 +118,22 @@ AVAILABLE TOOLS:
 
 OUTPUT FORMAT (STRICT JSON ONLY):
 {{
-  "action_type": "tool_call" or "system_action",
-  "tool": "...",
-  "params": {{"service": "..."}}
+  "hypothesis": "Clear explanation of what you think is wrong based on signals",
+  "reasoning": "Why this specific plan will solve the incident",
+  "actions": [
+    {{
+      "action_type": "tool_call" or "system_action",
+      "tool": "...",
+      "params": {{"service": "..."}}
+    }},
+    ...
+  ]
 }}
-NO explanation. ONLY action.
+
+RULES:
+1. MAX 3 actions per plan.
+2. DO NOT return a single action; provide a plan (e.g., [diagnose, diagnose, fix]).
+3. NO explanation outside the JSON. ONLY the JSON object.
 """
 
 # ── LLM Call ─────────────────────────────────────────────────────────────────
@@ -117,15 +150,19 @@ def _extract_json(raw: str) -> str:
 
 
 def call_llm(prompt: str) -> dict | None:
-    """Call LLM and return parsed JSON dict, or None on failure."""
-    global current_token_idx, client
+    """Call LLM and return parsed JSON dict, or None on failure.
+    
+    Thread-safe: each call creates its own client with a rotated token.
+    On 429/402, immediately rotates to the next token and retries.
+    """
+    local_client = _make_client()  # Per-call client with rotated token
 
     for attempt in range(3):
         try:
-            response = client.chat.completions.create(
+            response = local_client.chat.completions.create(
                 model=os.getenv("MODEL_NAME"),
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=120,
+                max_tokens=500,
                 temperature=0.2,
                 top_p=1.0,
             )
@@ -138,29 +175,33 @@ def call_llm(prompt: str) -> dict | None:
             if not isinstance(data, dict):
                 raise ValueError(f"LLM returned non-dict: {type(data)}")
 
-            # Validate required fields
-            action_type = data.get("action_type", "").strip()
-            tool = data.get("tool", "").strip()
+            # Validate structure
+            if "actions" not in data or not isinstance(data["actions"], list):
+                 raise ValueError("Missing or invalid 'actions' list")
+            
+            if len(data["actions"]) == 0:
+                 raise ValueError("Plan contains no actions")
+
+            # Validate each action
             VALID_TYPES = {"tool_call", "system_action"}
             VALID_TOOLS = {
                 "get_network_latency", "get_error_logs", "get_db_metrics", "get_cache_status",
                 "clear_db_connections", "restart_service", "scale_service", "flush_cache"
             }
-            if action_type not in VALID_TYPES:
-                raise ValueError(f"Invalid action_type: '{action_type}'")
-            if tool not in VALID_TOOLS:
-                raise ValueError(f"Invalid tool: '{tool}'")
+            
+            for act in data["actions"]:
+                if act.get("action_type") not in VALID_TYPES:
+                    raise ValueError("Invalid action_type in plan")
+                if act.get("tool") not in VALID_TOOLS:
+                    raise ValueError("Invalid tool in plan")
 
             return data
 
         except Exception as e:
             err = str(e)
             if "402" in err or "429" in err:
-                current_token_idx = (current_token_idx + 1) % len(HF_TOKENS)
-                client = InferenceClient(
-                    base_url=os.getenv("API_BASE_URL"),
-                    token=HF_TOKENS[current_token_idx],
-                )
+                # Rate limited — rotate to next token immediately
+                local_client = _make_client()
                 continue
             if attempt < 2 and ("json" in err.lower() or "Expecting" in err or "non-dict" in err):
                 continue
@@ -202,11 +243,22 @@ def format_history(history: list) -> str:
 # ── Step Execution ───────────────────────────────────────────────────────────
 
 def execute_step(env, llm_data: dict) -> tuple:
-    """Convert LLM output to Action and execute via env.step()."""
+    """Convert LLM output to Action and execute via env.step().
+    
+    Supports both formats:
+      - New plan format: {"actions": [{"action_type": ..., "tool": ..., "params": ...}, ...]}
+      - Single action format: {"action_type": ..., "tool": ..., "params": ...}
+    """
+    # Extract the action dict — plan format vs single action
+    if "actions" in llm_data and isinstance(llm_data["actions"], list) and len(llm_data["actions"]) > 0:
+        act = llm_data["actions"][0]
+    else:
+        act = llm_data
+
     action = Action(
-        action_type=llm_data["action_type"],
-        tool=llm_data["tool"],
-        params=llm_data.get("params", {})
+        action_type=act["action_type"],
+        tool=act["tool"],
+        params=act.get("params", {})
     )
     obs, reward, done, info = env.step(action)
     return action, obs, reward, done, info
@@ -238,135 +290,98 @@ def run_agent(env=None, max_steps=MAX_STEPS, delay=STEP_DELAY, stream=False, sil
     actions_taken = set()
     queries_made = set()
 
-    for step in range(1, max_steps + 1):
+    step = 1
+    while step <= max_steps:
         # ── Build prompt ─────────────────────────────────────────────
         services_str = serialize_services(obs.services)
         logs_str = "\n".join(f"  {l}" for l in obs.logs[-10:])
         history_str = format_history(history)
 
-        # Inject repeat warning
-        warning = ""
-        if len(actions_taken) > 0:
-            warning = f"\n\nACTIONS ALREADY TAKEN (do NOT repeat): {', '.join(actions_taken)}"
-
-        num_queries = len(queries_made)
         prompt = AGENT_PROMPT.format(
             services=services_str,
             latency=obs.latency,
-            phase=env.system_phase,
             logs=logs_str,
             history=history_str,
             step=step,
             max_steps=max_steps,
-        ) + warning
+        )
 
-        if num_queries >= 2:
-            prompt += "\n\n[CRITICAL OVERRIDE] YOU HAVE EXHAUSTED YOUR 2 DIAGNOSTIC QUERIES. YOU ARE STRICTLY FORBIDDEN FROM USING get_network_latency, get_error_logs, get_db_metrics, or get_cache_status. YOU MUST EXECUTE A FIX ACTION NOW."
-
-        # State summary
-        svc_summary = {"services": obs.services, "latency": obs.latency}
-
-        for attempt in range(3):
-            llm_data = call_llm(prompt)
-            if llm_data:
-                action_str = action_to_string(llm_data)
-                if action_str in actions_taken:
-                    prompt += f"\n\n[SYSTEM ERROR] Action '{action_str}' already taken. Pick a DIFFERENT action."
-                    llm_data = None
-                    continue
-                
-                if llm_data.get("action_type") == "tool_call":
-                    if llm_data.get("tool") in queries_made:
-                        prompt += f"\n\n[SYSTEM ERROR] Query '{llm_data.get('tool')}' already made. Try a DIFFERENT action."
-                        llm_data = None
-                        continue
-                    if num_queries >= 2:
-                        prompt += "\n\n[SYSTEM ERROR] Maximum 2 queries allowed. Must apply a fix now."
-                        llm_data = None
-                        continue
-                break
-
+        llm_data = call_llm(prompt)
         source = "LLM"
+
         if llm_data is None:
-            # ── LLM FAILED — FALLBACK TO SMART QUEUE ─────────────────────
+            # ── LLM FAILED — FALLBACK ─────────────────────────────────────
             source = "LLM_ERROR"
             scenario_lower = scenario.lower()
-            possible_fixes = []
-            if any(kw in scenario_lower for kw in ["db", "database", "deadlock"]):
-                possible_fixes = [
-                    {"action_type": "system_action", "tool": "clear_db_connections", "params": {}},
-                    {"action_type": "system_action", "tool": "restart_service", "params": {"service": "db-service"}},
-                    {"action_type": "system_action", "tool": "restart_service", "params": {"service": "api-service"}}
-                ]
-            elif "cache" in scenario_lower:
-                possible_fixes = [
-                    {"action_type": "system_action", "tool": "flush_cache", "params": {}},
-                    {"action_type": "system_action", "tool": "restart_service", "params": {"service": "api-service"}}
-                ]
-            else:
-                possible_fixes = [
-                    {"action_type": "system_action", "tool": "restart_service", "params": {"service": "api-service"}},
-                    {"action_type": "system_action", "tool": "scale_service", "params": {"service": "db-service"}}
-                ]
-
-            llm_data = None
-            for fix in possible_fixes:
-                if action_to_string(fix) not in actions_taken:
-                    llm_data = fix
-                    break
             
-            if not llm_data:
-                llm_data = {"action_type": "system_action", "tool": "scale_service", "params": {"service": "api-service"}}
+            # Simple fallback action
+            fallback = {"action_type": "tool_call", "tool": "get_error_logs", "params": {}}
+            if any(kw in scenario_lower for kw in ["db", "database", "deadlock"]):
+                fallback = {"action_type": "system_action", "tool": "restart_service", "params": {"service": "db-service"}}
+            elif "cache" in scenario_lower:
+                fallback = {"action_type": "system_action", "tool": "flush_cache", "params": {}}
+            
+            llm_data = {
+                "hypothesis": "LLM failed to respond. Falling back to safety policy.",
+                "reasoning": "Basic diagnostic or common fix based on incident name.",
+                "actions": [fallback]
+            }
 
-        # ── Agent thinking ───────────────────────────────────────────
         hypothesis = llm_data.get("hypothesis", "")
         reasoning = llm_data.get("reasoning", "")
-        confidence = float(llm_data.get("confidence", 0.5))
-        tool = llm_data.get("tool", "")
-        params = llm_data.get("params", {})
-        params_str = f" {params}" if params else ""
+        
+        # Execute the plan
+        for action_info in llm_data["actions"]:
+            if step > max_steps:
+                break
+                
+            tool = action_info.get("tool", "unknown")
+            params = action_info.get("params", {})
+            
+            # ── Execute ──────────────────────────────────────────────────
+            action_str = action_to_string(action_info)
+            actions_taken.add(action_str)
+            if action_info.get("action_type") == "tool_call":
+                queries_made.add(tool)
 
-        # ── Execute ──────────────────────────────────────────────────
-        action_str = action_to_string(llm_data)
-        actions_taken.add(action_str)
-        if llm_data.get("action_type") == "tool_call":
-            queries_made.add(llm_data.get("tool"))
+            action, obs, reward, done, info = execute_step(env, action_info)
 
-        action, obs, reward, done, info = execute_step(env, llm_data)
+            # Get last log as result
+            result_msg = obs.logs[-1] if obs.logs else "No result"
+            total_reward = info.get("total_reward", 0)
 
-        # Get last log as result
-        result_msg = obs.logs[-1] if obs.logs else "No result"
-        total_reward = info.get("total_reward", 0)
+            step_record = {
+                "step": step,
+                "action": tool,
+                "result": result_msg,
+                "reward": reward,
+                "hypothesis": hypothesis,
+                "why": reasoning,
+                "phase": env.system_phase,
+                "latency": obs.latency,
+                "confidence": 0.9,
+                "tool": tool,
+                "params": params,
+                "total_reward": total_reward,
+                "source": source,
+                "prompt": prompt,
+                "raw_response": llm_data,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            trajectory.append(step_record)
+            history.append(step_record)
 
-        step_record = {
-            "step": step,
-            "state_summary": svc_summary,
-            "action": tool,
-            "result": result_msg,
-            "reward": reward,
-            "hypothesis": hypothesis,
-            "why": reasoning,
-            "phase": env.system_phase,
-            "latency": obs.latency,
-            "confidence": confidence,
-            "tool": tool,
-            "params": params,
-            "total_reward": total_reward,
-            "source": source,
-            "prompt": prompt,
-            "raw_response": llm_data,
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-        trajectory.append(step_record)
-        history.append(step_record)
+            if stream:
+                yield step_record
 
-        if stream:
-            yield step_record
-
+            if done:
+                break
+            
+            step += 1
+            time.sleep(delay)
+            
         if done:
             break
-
-        time.sleep(delay)
 
     # ── Recovery Summary ─────────────────────────────────────────────────
     success = env.episode_tracker.successful_fix

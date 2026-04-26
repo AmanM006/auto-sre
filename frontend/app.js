@@ -372,6 +372,10 @@ function addTraceCard(step) {
             <span class="label">HYPOTHESIS</span>
             ${escapeHtml(step.hypothesis || '')}
         </div>
+        <div class="trace-thinking" style="background: rgba(46, 204, 113, 0.05); border-left-color: var(--accent-green);">
+            <span class="label" style="color: var(--accent-green);">REASONING</span>
+            ${escapeHtml(step.why || '')}
+        </div>
         <div class="trace-action">\u25B6 ${escapeHtml(step.tool || '')}${escapeHtml(paramsStr)}</div>
         ` : `
         <div class="trace-thinking">

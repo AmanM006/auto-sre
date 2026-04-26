@@ -17,9 +17,9 @@ except ImportError:
 from auto_sre_env.environment import AutoSREEnv
 from agent_loop import run_agent
 
-NUM_EPISODES = 1000
+NUM_EPISODES = 4000  # Start with 1000 to verify stability
 OUTPUT_FILE = "sft_dataset.jsonl"
-CONCURRENCY = 15  # Adjust this: 5 is safe, 10 is fast, lower if you get API rate limit errors.
+CONCURRENCY = 40  # 30-50 is the sweet spot with 6+ tokens
 
 def run_single_episode():
     """Worker function to run a single episode and return its successful records."""
@@ -47,9 +47,17 @@ def run_single_episode():
                 # Exclude any steps that completely failed to get any JSON or Action at all
                 if prompt is None or raw_response is None or not isinstance(raw_response, dict):
                     continue
+
+                # Handle multi-step plans: skip empty, extract first action for SFT
+                if "actions" in raw_response:
+                    if len(raw_response["actions"]) == 0:
+                        continue
+                    action = raw_response["actions"][0]
+                else:
+                    action = raw_response
                 
-                # Format to JSON
-                response_str = json.dumps(raw_response, indent=2)
+                # Format single action to JSON for SFT training
+                response_str = json.dumps(action, indent=2)
                 
                 record = {
                     "messages": [

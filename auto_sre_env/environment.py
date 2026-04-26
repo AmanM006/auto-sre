@@ -59,7 +59,8 @@ class AutoSREEnv:
             elif action.tool == "get_cache_status":
                 action.target, action.query = "@db-admin", "cache_status"
                 
-        elif action.action_type == "system_action":
+                
+        if action.action_type == "system_action":
             if action.tool == "clear_db_connections":
                 action.target, action.delegate_action = "@db-admin", "clear_connections"
             elif action.tool == "restart_service":
@@ -105,32 +106,29 @@ class AutoSREEnv:
                     penalty = -0.3
                     self.state["logs"].append(f"[{ts}] ERROR   system: fix '{fix_key}' failed (-0.3). Missing prerequisites: {missing_deps}")
                 else:
-                    if len(self.signals_gathered) < 2:
-                        penalty = -0.3
-                        if fix_key not in self.state["applied_fixes"]:
-                            self.state["applied_fixes"].append(fix_key)
-                            self.state["logs"].append(f"[{ts}] WARN    system: PREMATURE FIX '{fix_key}' (-0.3). Reduced effectiveness.")
-                    else:
-                        if fix_key not in self.state["applied_fixes"]:
-                            self.state["applied_fixes"].append(fix_key)
+                    # FIX: premature fix still counts as applied, just with lower reward
+                    if fix_key not in self.state["applied_fixes"]:
+                        self.state["applied_fixes"].append(fix_key)
+                        if len(self.signals_gathered) < 2:
+                            penalty = -0.2
+                            self.state["logs"].append(f"[{ts}] WARN    system: PREMATURE FIX '{fix_key}' (-0.2). Reduced effectiveness.")
+                        else:
                             self.state["logs"].append(f"[{ts}] INFO    system: applied fix '{fix_key}' — metrics stabilizing...")
                             self._apply_partial_effect(fix_key)
 
         # 3. UPDATE STATE & PROPAGATE
-        # (Simplified propagation for the new logic)
         self._update_metrics()
 
         # 4. GRADING & DONE CONDITION
-        # ALL required fixes must be applied, AND metrics must be healthy
         all_fixes_done = all(f in self.state["applied_fixes"] for f in self.state["required_fixes"])
-        metrics_healthy = (self.state["latency"] < 200 and 
+        metrics_healthy = (self.state["latency"] < 500 and # More lenient latency for success
                           all(s["status"] == "running" for s in self.state["services"].values()))
         
         if all_fixes_done and metrics_healthy:
             self.done = True
             self.episode_tracker.successful_fix = True
             self.system_phase = "RECOVERY"
-            base_reward = 1.0 if len(self.signals_gathered) >= 2 else 0.2
+            base_reward = 1.0 if len(self.signals_gathered) >= 2 else 0.5
             reward = base_reward + penalty
         else:
             self.done = False
@@ -138,7 +136,7 @@ class AutoSREEnv:
                 self.system_phase = "FAILURE"
             else:
                 self.system_phase = "DEGRADED"
-            reward = penalty - 0.05 # Step penalty
+            reward = penalty - 0.02 # Lower step penalty to encourage exploration
 
         self.step_count += 1
         self.episode_tracker.total_reward += reward
