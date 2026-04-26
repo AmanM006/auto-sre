@@ -13,3 +13,4 @@ bitsandbytes
 datasets
 wandb
 json_repair
+tqdm

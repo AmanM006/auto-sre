@@ -385,6 +385,26 @@ function addTraceCard(step) {
     container.scrollTop = container.scrollHeight;
 }
 
+function showThinkingIndicator(message = 'Agent is reasoning...') {
+    const container = document.getElementById('trace-container');
+    hideThinkingIndicator(); // Remove if exists
+
+    const div = document.createElement('div');
+    div.id = 'thinking-indicator';
+    div.className = 'thinking-indicator';
+    div.innerHTML = `
+        <div class="spinner"></div>
+        <div class="thinking-text">${message}</div>
+    `;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+}
+
+function hideThinkingIndicator() {
+    const el = document.getElementById('thinking-indicator');
+    if (el) el.remove();
+}
+
 // ── Recovery Summary ────────────────────────────────────────────────────────
 
 function showSummary(summary) {
@@ -523,11 +543,13 @@ async function runAgent() {
                 // Initial state
                 updateFromState(data.state);
                 document.getElementById('scenario-name').textContent = data.scenario || 'Unknown';
+                showThinkingIndicator('Agent is reasoning...');
                 return;
             }
 
             if (data.type === 'summary') {
                 // Recovery summary
+                hideThinkingIndicator();
                 showSummary(data);
                 if (data.state) updateFromState(data.state);
                 return;
@@ -535,14 +557,20 @@ async function runAgent() {
 
             if (data.type === 'done') {
                 // Stream ended
+                hideThinkingIndicator();
                 setButtonsEnabled(false);
                 if (eventSource) { eventSource.close(); eventSource = null; }
                 return;
             }
 
             // Regular step
+            hideThinkingIndicator();
             addTraceCard(data);
             if (data.state) updateFromState(data.state);
+            
+            if (!data.state.done) {
+                showThinkingIndicator('Analyzing results and planning next step...');
+            }
 
         } catch (e) {
             console.error('SSE parse error:', e);
@@ -550,6 +578,7 @@ async function runAgent() {
     };
 
     eventSource.onerror = function() {
+        hideThinkingIndicator();
         setButtonsEnabled(false);
         if (eventSource) { eventSource.close(); eventSource = null; }
     };
