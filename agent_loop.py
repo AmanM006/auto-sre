@@ -353,6 +353,8 @@ def run_agent(env=None, max_steps=MAX_STEPS, delay=STEP_DELAY, stream=False, sil
             "params": params,
             "total_reward": total_reward,
             "source": source,
+            "prompt": prompt,
+            "raw_response": llm_data,
             "timestamp": datetime.utcnow().isoformat(),
         }
         trajectory.append(step_record)
