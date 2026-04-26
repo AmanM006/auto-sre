@@ -15,6 +15,40 @@ try:
 except ImportError:
     pass
 
+from unsloth import FastLanguageModel
+
+rl_model, rl_tokenizer = FastLanguageModel.from_pretrained(
+    model_name="unsloth/Qwen2.5-3B-Instruct",
+    max_seq_length=2048,
+    load_in_4bit=True,
+)
+
+rl_model.load_adapter("rl_lora_model")
+
+def get_rl_action(prompt):
+    inputs = rl_tokenizer(prompt, return_tensors="pt").to("cuda")
+
+    outputs = rl_model.generate(
+        **inputs,
+        max_new_tokens=50,
+        temperature=0.3
+    )
+
+    text = rl_tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    import json
+    try:
+        data = json.loads(text)
+        from auto_sre_env.models import Action
+        action = Action(
+            action_type=data.get("action_type"),
+            tool=data.get("tool"),
+            params=data.get("params", {})
+        )
+        return action, data
+    except:
+        return None, None
+
 try:
     from google.colab import userdata
     for key in ["API_BASE_URL", "MODEL_NAME", "HF_TOKEN", "HF_TOKEN_1", "HF_TOKEN_2",
@@ -355,6 +389,12 @@ def llm_agent(obs, action_history, memory, episode_memory):
 
     if num_queries >= 2:
         prompt += "\n\n[CRITICAL OVERRIDE] YOU HAVE EXHAUSTED YOUR 2 DIAGNOSTIC QUERIES. YOU ARE STRICTLY FORBIDDEN FROM USING get_network_latency, get_error_logs, get_db_metrics, or get_cache_status. YOU MUST EXECUTE A FIX ACTION NOW."
+
+    # 🔥 USE RL MODEL FOR FIRST STEP ONLY
+    if episode_memory["step"] == 0:
+        action, data = get_rl_action(prompt)
+        if action is not None:
+            return action, action_to_string(action), "RL", data
 
     for attempt in range(3):
         try:
