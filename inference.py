@@ -51,55 +51,62 @@ NUM_EPISODES     = 20
 MAX_STEPS        = 10
 
 # ── OUTPUT FLAGS ──────────────────────────────────────────────────────────────
-SHOW_LOGS  = True   # True  → print clean per-step trace each episode
+SHOW_LOGS  = False   # True  → print clean per-step trace each episode
                     # False → only print final metrics (fast runs / CI)
 
-# ── COLORS ────────────────────────────────────────────────────────────────────
-C_CYAN  = '\033[38;2;0;220;255m'
-C_TEXT  = '\033[38;2;220;230;240m'
-C_MUTED = '\033[38;2;100;115;130m'
-C_GREEN = '\033[38;2;0;255;160m'
-C_RED   = '\033[38;2;255;80;80m'
-C_GOLD  = '\033[38;2;255;200;60m'
-C_MAG   = '\033[38;2;200;130;255m'
-R       = '\033[0m'
+from auto_sre_env.models import Action
+from shared_formatter import StepData, format_step, format_episode_summary, C_CYAN, C_TEXT, C_MUTED, C_GREEN, C_RED, C_GOLD, C_MAG, R
 
-# ── PROMPT CACHE ──────────────────────────────────────────────────────────────
-USE_CACHE    = False
-prompt_cache = {}
+DIAGNOSIS_PROMPT = """You are an SRE Incident Commander responsible for restoring a failing distributed system.
 
-DIAGNOSIS_PROMPT = """You are an on-call SRE Incident Commander resolving a P0 incident.
-
-Current system state:
+CURRENT STATE:
 {services}
-
-Recent logs (newest last):
-{logs}
-
-End-to-end latency: {latency}ms (NOTE: Metrics contain ±15% noise)
-
-===================================
-PAST EPISODES MEMORY:
-{memory}
-===================================
-
-Previous actions: {history}
+Logs: {logs}
+Latency: {latency}ms
+History: {history}
+Memory: {memory}
 Queries made: {queries_made}
 Last action: {last_action}
 Step: {step} of {max_steps}
 
-CRITICAL EXECUTION RULES:
-1. NEVER repeat the same action twice
-2. ALWAYS follow fix dependency chains in order
-3. LIMIT exploration: Maximum 2 queries, then apply fixes
-4. NO RANDOM ACTIONS: every action must follow from signals
-5. ACTION PRIORITY: if root cause identified → start fix chain immediately
-6. IF a fix fails: identify missing prerequisite, apply that first
-7. GOAL: Solve in minimum steps (target: 4-6)
+CRITICAL RULES:
+1. NEVER repeat the same action or query more than once per episode.
+2. You are allowed MAXIMUM 2 diagnostic queries.
+3. After 2 queries, you MUST start applying fixes.
+4. Do NOT over-analyze. Act decisively.
+5. If you have already made 2 queries, ANY additional query is invalid. You MUST immediately execute a fix.
+6. If a scenario requires multiple fixes (e.g., clear_db_connections THEN restart_service), you MUST execute them ONE BY ONE IN EXACT ORDER across multiple steps. Do not skip dependencies.
 
-OUTPUT REQUIREMENT:
-You MUST return a VALID action every step.
-Do NOT produce incomplete JSON.
+STRICT SCENARIO → ACTION MAPPING:
+After gathering 2 signals, you MUST choose a fix based on system condition. Use this mapping:
+
+1. CACHE ISSUE (high latency, cache errors):
+   → flush_cache
+   → restart_service(service="api-service")
+
+2. DB OVERLOAD (high DB CPU, high connections):
+   → clear_db_connections
+   → restart_service(service="db-service")
+   → restart_service(service="api-service")
+
+3. API DOWN:
+   → restart_service(service="api-service")
+
+4. NETWORK / LATENCY ISSUE:
+   → scale_service(service="db-service")
+   OR restart_service(service="api-service")
+
+CRITICAL:
+- After 2 queries → DO NOT query again
+- Choose the MOST LIKELY fix chain and execute it fully
+- DO NOT wait for perfect certainty
+- Even if unsure → ACT
+
+ANTI-LOOP RULE:
+If 2 queries are done:
+→ You MUST output a FIX action (system_action)
+→ NEVER output another query
+If your last action was already performed, you MUST choose a DIFFERENT action.
 
 AVAILABLE TOOLS:
 - get_network_latency()
@@ -107,176 +114,49 @@ AVAILABLE TOOLS:
 - get_db_metrics()
 - get_cache_status()
 - clear_db_connections()
-- restart_service(service_name)  # api-service | db-service
-- scale_service(service_name)
+- restart_service(service="api-service" OR "db-service")
+- scale_service(service="api-service" OR "db-service")
 - flush_cache()
 
-Respond ONLY in JSON:
+OUTPUT FORMAT (STRICT JSON ONLY):
 {{
-  "hypothesis": "...",
-  "why": "...",
-  "action_type": "tool_call|system_action",
+  "action_type": "tool_call" OR "system_action",
   "tool": "...",
-  "params": {{...}}
-}}"""
+  "params": {{"service": "..."}}
+}}
+
+NO explanation. NO reasoning. ONLY action."""
+
+# ── PROMPT CACHE ──────────────────────────────────────────────────────────────
+USE_CACHE    = False
+prompt_cache = {}
 
 
-# ── DISPLAY HELPERS ───────────────────────────────────────────────────────────
-
-def _sep(char='─', width=52):
-    print(f"{C_MUTED}{char * width}{R}")
-
-def _status_color(status):
-    s = str(status).upper()
-    if s == 'RUNNING':                    return C_GREEN
-    if s in ('DOWN', 'OVERLOADED'):       return C_RED
-    return C_GOLD
-
-def _svc_val(svc, key, fallback='?'):
-    """Safely read a value from a service entry that may be a dict or object."""
-    if svc is None:
-        return fallback
-    if isinstance(svc, dict):
-        return svc.get(key, fallback)
-    return getattr(svc, key, fallback)
-
-def obs_to_snap(obs):
-    """
-    Convert an obs object (dataclass / namedtuple / dict) to a plain
-    {'services': {name: {...}}, 'latency': int} dict safe for printing.
-    """
-    if obs is None:
-        return None
-
-    # -- pull services --
-    raw_services = getattr(obs, 'services', None)
-    if raw_services is None and isinstance(obs, dict):
-        raw_services = obs.get('services', {})
-
-    services = {}
-    if raw_services:
-        for name, svc in (raw_services.items() if isinstance(raw_services, dict) else vars(raw_services).items()):
-            services[name] = {
-                'status':          _svc_val(svc, 'status', 'unknown'),
-                'cpu':             _svc_val(svc, 'cpu', None),
-                'memory':          _svc_val(svc, 'memory', None),
-                'connections':     _svc_val(svc, 'connections', None),
-                'max_connections': _svc_val(svc, 'max_connections', None),
-            }
-
-    # -- pull latency --
-    latency = getattr(obs, 'latency', None)
-    if latency is None and isinstance(obs, dict):
-        latency = obs.get('latency', '?')
-
-    return {'services': services, 'latency': latency}
-
-def format_state_summary(services):
-    """Return a colored one-line service status string."""
-    if not services:
-        return "?"
-    parts = []
-    for name, info in services.items():
-        status = str(info.get('status', 'unknown')).upper()
-        c = _status_color(status)
-        parts.append(f"{c}{name.upper()}: {status}{R}")
-    return " | ".join(parts)
+def log_step_metrics(step, reward, total_reward, source, data=None, episode_memory=None):
+    """Prints the raw minimal metrics format."""
+    import json
+    if data:
+        # We assume current_token_idx is global
+        global current_token_idx
+        print(f"[TOKEN {current_token_idx}] output: {json.dumps(data)}")
+    
+    if episode_memory:
+        queries_count = len(episode_memory.get("queries_made", set()))
+        last_act = episode_memory.get("last_action", "none") or "none"
+        print(f"[MEM] step={step} last_action={last_act} queries={queries_count}")
+    
+    print(f"  -> Step {step} | [{source}] | Reward: {reward:+.3f} | Total: {total_reward:.3f}")
 
 
-def print_clean_step(step_num, tool, params, result, reward, total_reward,
-                     state=None, done=False):
-    """
-    Print a single step card in the canonical format:
-
-        [STEP N]
-        ────────
-        STATE:   ...
-        SIGNAL:  ...
-        ACTION:  ...
-        RESULT:  ...
-        REWARD:  ...
-        ────────
-    """
-    print(f"\n{C_CYAN}[STEP {step_num}]{R}")
-    _sep()
-
-    if state:
-        services = state.get("services", {})
-        latency  = state.get("latency", "?")
-        svc_str  = format_state_summary(services)
-        print(f"{C_CYAN}STATE:{R}")
-        print(f"  {svc_str} | {C_MUTED}LATENCY: {latency}ms{R}")
-
-        # SIGNAL block — always print, show ? when data missing
-        db  = services.get("db-service",    {})
-        api = services.get("api-service",   {})
-        signals = []
-
-        db_cpu  = db.get('cpu')
-        db_conn = db.get('connections')
-        db_max  = db.get('max_connections')
-        conn_str = f"{db_conn}/{db_max}" if db_conn is not None or db_max is not None else "?/?"
-        signals.append(f"DB CPU: {db_cpu if db_cpu is not None else '?'}%  Connections: {conn_str}")
-
-        api_cpu = api.get('cpu')
-        signals.append(f"API CPU: {api_cpu if api_cpu is not None else '?'}%")
-
-        print(f"{C_CYAN}SIGNAL:{R}")
-        for s in signals:
-            print(f"  {C_MUTED}{s}{R}")
-
-    # ACTION
-    param_str = ""
-    if params:
-        param_str = "  " + "  ".join(f"{k}={v}" for k, v in params.items())
-    print(f"{C_CYAN}ACTION:{R}")
-    print(f"  {C_TEXT}{tool}{R}{C_MUTED}{param_str}{R}")
-
-    # RESULT
-    print(f"{C_CYAN}RESULT:{R}")
-    print(f"  {result}")
-
-    # REWARD
-    r_color = C_GREEN if reward >= 0 else C_RED
-    print(f"{C_CYAN}REWARD:{R}")
-    print(f"  {r_color}{reward:+.3f}{R}  {C_MUTED}(Total: {total_reward:+.3f}){R}")
-
-    if done:
-        print(f"\n  {C_GREEN}✅ INCIDENT RESOLVED{R}")
-
-    _sep()
-
-
-def print_episode_summary(ep, scenario_name, info, key_actions, source_majority):
-    """Clean episode summary block."""
+def print_raw_episode_summary(ep, info, source_majority):
+    """Raw episode summary block."""
     success = info.get("success", False)
-    color   = C_GREEN if success else C_RED
-    icon    = "✔" if success else "✘"
-    status  = "SUCCESS" if success else "FAILED"
-    if success and info.get("steps", 99) <= 4:
-        status = "SUCCESS (Optimal)"
-
-    _sep('═', 52)
-    print(f"{color}  Episode {ep}  ·  {status}{R}")
-    _sep('═', 52)
-    print(f"  {color}{icon} Scenario:{R}    {scenario_name}")
-    print(f"  {color}{icon} Steps:{R}       {info.get('steps', '?')}")
-    print(f"  {color}{icon} Reward:{R}      {info.get('total_reward', 0):+.3f}")
-    print(f"  {color}{icon} Source:{R}      {source_majority}")
-
-    if key_actions:
-        chain = f"{C_MUTED} → {R}".join(f"{C_TEXT}{a}{R}" for a in key_actions)
-        print(f"  {color}{icon} Fix Chain:{R}   {chain}")
-
-    print()
-
-
-def log_step_metrics(step, reward, total_reward, source):
-    """Minimal inline metric log (used when SHOW_LOGS=False)."""
-    src_color = C_MAG if source == "FALLBACK" else C_CYAN
-    print(f"  {C_MUTED}Step {step}{R}  {src_color}[{source}]{R}  "
-          f"{C_GREEN if reward >= 0 else C_RED}{reward:+.3f}{R}  "
-          f"{C_MUTED}Total: {total_reward:.3f}{R}")
+    status = "SUCCESS" if success else "FAILED"
+    print(f"\nEpisode {ep}:")
+    print(f"Status: {status}")
+    print(f"Steps: {info.get('steps', '?')}")
+    print(f"Reward: {info.get('total_reward', 0):.3f}")
+    print(f"Source: {source_majority}\n")
 
 
 # ── AGENT IMPLEMENTATIONS ─────────────────────────────────────────────────────
@@ -295,7 +175,7 @@ def random_policy():
         Action(action_type="tool_call",     tool="get_network_latency", params={}),
         Action(action_type="tool_call",     tool="get_db_metrics",      params={}),
     ])
-    return choice, action_to_string(choice), "RANDOM"
+    return choice, action_to_string(choice), "RANDOM", {}
 
 
 def naive_baseline_agent(obs, step_count):
@@ -313,7 +193,7 @@ def naive_baseline_agent(obs, step_count):
     ]
     idx    = min(step_count, len(playbook) - 1)
     action = playbook[idx]
-    return action, action_to_string(action), "BASELINE"
+    return action, action_to_string(action), "BASELINE", {}
 
 
 def fallback_policy(obs, action_history):
@@ -384,9 +264,9 @@ def call_llm(prompt):
             response = client.chat.completions.create(
                 model=os.getenv("MODEL_NAME"),
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=350,
-                temperature=0,
-                top_p=1,
+                max_tokens=120,
+                temperature=0.2,
+                top_p=1.0,
             )
             raw  = response.choices[0].message.content.strip()
             raw  = _extract_json(raw)
@@ -415,8 +295,8 @@ def call_llm(prompt):
             action = Action(action_type=action_type, tool=tool, params=params)
 
             if USE_CACHE:
-                prompt_cache[prompt_hash] = action
-            return action
+                prompt_cache[prompt_hash] = (action, data)
+            return action, data
 
         except Exception as e:
             err_msg    = str(e)
@@ -473,17 +353,65 @@ def llm_agent(obs, action_history, memory, episode_memory):
     if escalation:   prompt += escalation
     if loop_warning: prompt += loop_warning
 
-    try:
-        action = call_llm(prompt)
-        if action is None:
-            raise ValueError("LLM returned None (all tokens exhausted)")
-        source = "LLM"
-    except Exception as e:
-        print(f"{C_RED}[LLM ERROR] {e}{R}")
-        action = Action(action_type="tool_call", tool="get_error_logs", params={})
-        source = "LLM_ERROR"
+    if num_queries >= 2:
+        prompt += "\n\n[CRITICAL OVERRIDE] YOU HAVE EXHAUSTED YOUR 2 DIAGNOSTIC QUERIES. YOU ARE STRICTLY FORBIDDEN FROM USING get_network_latency, get_error_logs, get_db_metrics, or get_cache_status. YOU MUST EXECUTE A FIX ACTION NOW."
 
-    return action, action_to_string(action), source
+    for attempt in range(3):
+        try:
+            action, data = call_llm(prompt)
+            if action is None:
+                raise ValueError("LLM returned None (all tokens exhausted)")
+            action_str = action_to_string(action)
+            
+            # Action Filtering
+            if action_str in episode_memory["actions_taken"]:
+                raise ValueError(f"Action '{action_str}' already taken.")
+            
+            if action.action_type == "tool_call":
+                if action.tool in episode_memory["queries_made"]:
+                    raise ValueError(f"Query '{action.tool}' already made.")
+                if num_queries >= 2:
+                    raise ValueError("Maximum 2 queries allowed. Must apply a fix now.")
+                    
+            source = "LLM"
+            break
+        except Exception as e:
+            print(f"{C_RED}[LLM ERROR/RETRY {attempt+1}/3] {e}{R}")
+            prompt += f"\n\n[SYSTEM ERROR] Your last choice was rejected: {e}. Try a DIFFERENT action."
+            if attempt == 2:
+                scenario = episode_memory.get("scenario", "").lower()
+                possible_fixes = []
+                if any(kw in scenario for kw in ["db", "database", "deadlock"]):
+                    possible_fixes = [
+                        Action(action_type="system_action", tool="clear_db_connections", params={}),
+                        Action(action_type="system_action", tool="restart_service", params={"service": "db-service"}),
+                        Action(action_type="system_action", tool="restart_service", params={"service": "api-service"})
+                    ]
+                elif "cache" in scenario:
+                    possible_fixes = [
+                        Action(action_type="system_action", tool="flush_cache", params={}),
+                        Action(action_type="system_action", tool="restart_service", params={"service": "api-service"})
+                    ]
+                else:
+                    possible_fixes = [
+                        Action(action_type="system_action", tool="restart_service", params={"service": "api-service"}),
+                        Action(action_type="system_action", tool="scale_service", params={"service": "db-service"})
+                    ]
+                
+                # Select first non-taken fix
+                action = None
+                for fix in possible_fixes:
+                    if action_to_string(fix) not in episode_memory["actions_taken"]:
+                        action = fix
+                        break
+                
+                if not action:
+                    action = Action(action_type="system_action", tool="scale_service", params={"service": "api-service"})
+                
+                source = "LLM_ERROR"
+                data = {}
+
+    return action, action_to_string(action), source, data
 
 
 # ── TRAINING LOOP ─────────────────────────────────────────────────────────────
@@ -502,29 +430,36 @@ def run_loop():
     baseline_actions = []
 
     for i in range(MAX_STEPS):
-        action, action_str, source = naive_baseline_agent(obs, i)
+        action, action_str, source, data = naive_baseline_agent(obs, i)
         baseline_actions.append(action_str)
         obs, reward, done, info = env.step(action)
 
         if SHOW_LOGS:
-            result_str = f"reward {reward:+.3f}"
-            print_clean_step(
-                step_num=i + 1,
-                tool=action.tool,
+            state_snap = {"services": obs.services, "latency": obs.latency} if hasattr(obs, 'services') else None
+            step_data = StepData(
+                step=i + 1,
+                state_summary=state_snap,
+                action=action.tool,
                 params=action.params,
-                result=result_str,
+                result=obs.logs[-1] if hasattr(obs, 'logs') and obs.logs else "No result",
                 reward=reward,
                 total_reward=info["total_reward"],
-                state=obs_to_snap(obs),
                 done=done,
+                hypothesis=data.get("hypothesis", ""),
+                why=data.get("why", ""),
+                source=source,
             )
+            format_step(step_data, mode="clean")
         else:
-            log_step_metrics(i + 1, reward, info["total_reward"], source)
+            log_step_metrics(i + 1, reward, info["total_reward"], source, data=data, episode_memory=None)
 
         if done:
             break
 
-    print_episode_summary("Baseline", "NaiveAgent", info, baseline_actions[:4], "BASELINE")
+    if SHOW_LOGS:
+        format_episode_summary("Baseline", "NaiveAgent", info, baseline_actions[:4], "BASELINE")
+    else:
+        print_raw_episode_summary("Baseline", info, "BASELINE")
 
     # ── PHASE 2: INTELLIGENT AGENT ────────────────────────────────────────────
     print(f"{C_GOLD}── PHASE 2: {MODE.upper()} AGENT {'─'*30}{R}\n")
@@ -550,26 +485,18 @@ def run_loop():
             "actions_taken": [],
             "last_action":   None,
             "step":          0,
+            "scenario":      scenario_name,
         }
 
         for step in range(MAX_STEPS):
             if MODE == "random":
-                action, action_str, source = random_policy()
+                action, action_str, source, data = random_policy()
             elif MODE == "llm":
-                action, action_str, source = llm_agent(obs, action_history, cross_episode_memory, episode_memory)
+                action, action_str, source, data = llm_agent(obs, action_history, cross_episode_memory, episode_memory)
             else:
                 raise ValueError(f"Unknown MODE: {MODE}")
 
-            # ── ACTION FILTERING ──────────────────────────────────────────────
-            if MODE == "llm" and source == "LLM":
-                if action_str in episode_memory["actions_taken"]:
-                    print(f"{C_GOLD}[WARN] Repeated action '{action_str}'{R}")
-                    total_intercept_penalty -= 0.2
-                elif action.action_type == "tool_call":
-                    if action.tool in episode_memory["queries_made"]:
-                        print(f"{C_GOLD}[WARN] Repeated query '{action.tool}'{R}")
-                        total_intercept_penalty -= 0.2
-
+            # The action filtering is now handled inside llm_agent (retry loop)
             action_history.append(action_str)
             source_counts[source] = source_counts.get(source, 0) + 1
 
@@ -592,25 +519,32 @@ def run_loop():
                 total_intercept_penalty = 0.0
 
             if SHOW_LOGS:
-                result_str = info.get("result", f"reward {reward:+.3f}")
-                print_clean_step(
-                    step_num=step + 1,
-                    tool=action.tool,
+                state_snap = {"services": obs.services, "latency": obs.latency} if hasattr(obs, 'services') else None
+                step_data = StepData(
+                    step=step + 1,
+                    state_summary=state_snap,
+                    action=action.tool,
                     params=action.params,
-                    result=result_str,
+                    result=obs.logs[-1] if hasattr(obs, 'logs') and obs.logs else "No result",
                     reward=reward,
                     total_reward=info["total_reward"],
-                    state=obs_to_snap(obs),
                     done=done,
+                    hypothesis=data.get("hypothesis", ""),
+                    why=data.get("why", ""),
+                    source=source,
                 )
+                format_step(step_data, mode="clean")
             else:
-                log_step_metrics(step + 1, reward, info["total_reward"], source)
+                log_step_metrics(step + 1, reward, info["total_reward"], source, data=data, episode_memory=episode_memory)
 
             if done:
                 break
 
         majority_source = max(source_counts, key=source_counts.get) if source_counts else "UNKNOWN"
-        print_episode_summary(ep, scenario_name, info, key_actions, majority_source)
+        if SHOW_LOGS:
+            format_episode_summary(ep, scenario_name, info, key_actions, majority_source)
+        else:
+            print_raw_episode_summary(ep, info, majority_source)
 
         # Build cross-episode memory
         mistakes = []

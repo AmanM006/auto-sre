@@ -58,17 +58,18 @@ class AutoSREEnv:
                 action.target, action.query = "@network-eng", "error_rate"
             elif action.tool == "get_cache_status":
                 action.target, action.query = "@db-admin", "cache_status"
-            elif action.tool == "clear_db_connections":
-                action.target, action.delegate_action = "@db-admin", "clear_connections"
+                
         elif action.action_type == "system_action":
-            if action.tool == "restart_service":
+            if action.tool == "clear_db_connections":
+                action.target, action.delegate_action = "@db-admin", "clear_connections"
+            elif action.tool == "restart_service":
                 action.action_type = "restart"
-                action.target = action.params.get("service", "")
+                action.target = action.params.get("service", action.params.get("service_name", ""))
                 if action.target == "db-service":
                     action.action_type, action.target, action.delegate_action = "delegate", "@db-admin", "restart_db"
             elif action.tool == "scale_service":
                 action.action_type = "scale"
-                action.target = action.params.get("service", "")
+                action.target = action.params.get("service", action.params.get("service_name", ""))
             elif action.tool == "flush_cache":
                 action.action_type = "flush_cache"
                 action.target = "cache"

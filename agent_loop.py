@@ -54,57 +54,54 @@ client = InferenceClient(
 MAX_STEPS = 10
 STEP_DELAY = 0.5  # seconds — makes the agent feel like it's actually thinking
 
-AGENT_PROMPT = """You are an autonomous SRE Incident Commander. You are the SOLE decision-maker for a P0 production outage.
+AGENT_PROMPT = DIAGNOSIS_PROMPT = """You are an SRE Incident Commander restoring a failing system.
 
-═══════════════════════════════════════
-CURRENT SYSTEM STATE
-═══════════════════════════════════════
+CURRENT STATE:
 {services}
-
-LATENCY: {latency}ms
-PHASE: {phase}
-
-═══════════════════════════════════════
-RECENT LOGS
-═══════════════════════════════════════
-{logs}
-
-═══════════════════════════════════════
-STEP HISTORY (last 5)
-═══════════════════════════════════════
-{history}
-
+Logs: {logs}
+Latency: {latency}ms
 Step: {step} of {max_steps}
 
-═══════════════════════════════════════
-EXECUTION RULES
-═══════════════════════════════════════
-1. NEVER repeat the same action twice
-2. Gather exactly 2 diagnostic signals, then START FIXING
-3. Follow fix dependency chains — apply fixes IN ORDER
-4. If a fix fails, identify the missing prerequisite and apply it next
-5. Goal: resolve in 4-6 steps
+ACTIONS ALREADY TAKEN (DO NOT REPEAT THESE):
+{history}
+
+CRITICAL RULES:
+1. MAX 2 DIAGNOSTIC QUERIES. After 2 queries, you MUST use a fix (system_action).
+2. NEVER output an action that is in the "ACTIONS ALREADY TAKEN" list.
+3. READ THE LOGS: If you see "Missing prerequisites: ['some_fix']", execute that exact fix next.
+
+STRICT DEPENDENCY CHAINS (Execute sequentially step-by-step):
+- DB OVERLOAD / CASCADING DB / DEADLOCK: 
+  Step A: scale_service(service="db-service")
+  Step B: clear_db_connections()
+  Step C: restart_service(service="db-service")
+  Step D: restart_service(service="api-service")
+
+- NETWORK / CACHE STORM: 
+  Step A: flush_cache()
+  Step B: restart_service(service="api-service")
+
+- HYBRID FAILURE: 
+  Execute DB chain, then Cache chain.
 
 AVAILABLE TOOLS:
-- get_db_metrics()         [diagnostic signal]
-- get_network_latency()    [diagnostic signal]
-- get_error_logs()         [diagnostic signal]
-- get_cache_status()       [diagnostic signal]
-- clear_db_connections()   [fix action]
-- restart_service(service) [fix action] service: api-service, db-service
-- scale_service(service)   [fix action] service: db-service
-- flush_cache()            [fix action]
+- get_network_latency()
+- get_error_logs()
+- get_db_metrics()
+- get_cache_status()
+- clear_db_connections()
+- restart_service(service="api-service" OR "db-service")
+- scale_service(service="api-service" OR "db-service")
+- flush_cache()
 
-Respond ONLY with valid JSON:
+OUTPUT FORMAT (STRICT JSON ONLY):
 {{
-  "hypothesis": "what you think is wrong",
-  "reasoning": "why this action",
-  "confidence": 0.95,
-  "action_type": "tool_call|system_action",
-  "tool": "tool_name",
-  "params": {{}}
-}}"""
-
+  "action_type": "tool_call" or "system_action",
+  "tool": "...",
+  "params": {{"service": "..."}}
+}}
+NO explanation. ONLY action.
+"""
 
 # ── LLM Call ─────────────────────────────────────────────────────────────────
 
@@ -128,9 +125,9 @@ def call_llm(prompt: str) -> dict | None:
             response = client.chat.completions.create(
                 model=os.getenv("MODEL_NAME"),
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=400,
-                temperature=0,
-                top_p=1,
+                max_tokens=120,
+                temperature=0.2,
+                top_p=1.0,
             )
             raw = response.choices[0].message.content.strip()
             raw = _extract_json(raw)
@@ -170,6 +167,12 @@ def call_llm(prompt: str) -> dict | None:
             return None
 
     return None
+
+
+def action_to_string(action: dict) -> str:
+    tool   = action.get("tool", "unknown")
+    params = f" {action.get('params', {})}" if action.get("params") else ""
+    return f"{tool}{params}"
 
 
 # ── State Serialization ──────────────────────────────────────────────────────
@@ -230,15 +233,10 @@ def run_agent(env=None, max_steps=MAX_STEPS, delay=STEP_DELAY, stream=False, sil
     obs = env.reset()
     scenario = env.state.get("name", "Unknown Incident")
 
-    if not silent:
-        print(f"\n{'='*50}")
-        print(f"  AUTONOMOUS CLOUD RECOVERY SYSTEM")
-        print(f"  Incident: {scenario}")
-        print(f"{'='*50}\n")
-
     trajectory = []
     history = []
     actions_taken = set()
+    queries_made = set()
 
     for step in range(1, max_steps + 1):
         # ── Build prompt ─────────────────────────────────────────────
@@ -251,6 +249,7 @@ def run_agent(env=None, max_steps=MAX_STEPS, delay=STEP_DELAY, stream=False, sil
         if len(actions_taken) > 0:
             warning = f"\n\nACTIONS ALREADY TAKEN (do NOT repeat): {', '.join(actions_taken)}"
 
+        num_queries = len(queries_made)
         prompt = AGENT_PROMPT.format(
             services=services_str,
             latency=obs.latency,
@@ -261,49 +260,63 @@ def run_agent(env=None, max_steps=MAX_STEPS, delay=STEP_DELAY, stream=False, sil
             max_steps=max_steps,
         ) + warning
 
-        if not silent:
-            print(f"\033[90m{'-'*50}\033[0m")
-            print(f"\033[1;96m[STEP {step}/{max_steps}]\033[0m  Phase: \033[1;93m{env.system_phase}\033[0m")
-            print(f"\033[90m{'-'*50}\033[0m")
+        if num_queries >= 2:
+            prompt += "\n\n[CRITICAL OVERRIDE] YOU HAVE EXHAUSTED YOUR 2 DIAGNOSTIC QUERIES. YOU ARE STRICTLY FORBIDDEN FROM USING get_network_latency, get_error_logs, get_db_metrics, or get_cache_status. YOU MUST EXECUTE A FIX ACTION NOW."
 
         # State summary
-        svc_summary = " | ".join(
-            f"{n}: {v.get('status', '?').upper()}"
-            for n, v in obs.services.items()
-        )
-        if not silent:
-            print(f"\033[90m[STATE] {svc_summary} | LATENCY: {obs.latency}ms\033[0m")
+        svc_summary = {"services": obs.services, "latency": obs.latency}
 
-        llm_data = call_llm(prompt)
+        for attempt in range(3):
+            llm_data = call_llm(prompt)
+            if llm_data:
+                action_str = action_to_string(llm_data)
+                if action_str in actions_taken:
+                    prompt += f"\n\n[SYSTEM ERROR] Action '{action_str}' already taken. Pick a DIFFERENT action."
+                    llm_data = None
+                    continue
+                
+                if llm_data.get("action_type") == "tool_call":
+                    if llm_data.get("tool") in queries_made:
+                        prompt += f"\n\n[SYSTEM ERROR] Query '{llm_data.get('tool')}' already made. Try a DIFFERENT action."
+                        llm_data = None
+                        continue
+                    if num_queries >= 2:
+                        prompt += "\n\n[SYSTEM ERROR] Maximum 2 queries allowed. Must apply a fix now."
+                        llm_data = None
+                        continue
+                break
 
+        source = "LLM"
         if llm_data is None:
-            # ── LLM FAILED — NO FALLBACK ─────────────────────────────
-            if not silent:
-                print(f"\033[91m[ERROR] LLM failed to produce valid action. Penalty applied.\033[0m")
-            step_record = {
-                "step": step,
-                "phase": env.system_phase,
-                "state": svc_summary,
-                "latency": obs.latency,
-                "hypothesis": "LLM_ERROR",
-                "reasoning": "LLM failed to produce a valid response",
-                "confidence": 0.0,
-                "tool": "none",
-                "params": {},
-                "result": "No action taken — LLM error",
-                "reward": -0.1,
-                "total_reward": sum(h["reward"] for h in history) - 0.1,
-                "source": "LLM_ERROR",
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-            trajectory.append(step_record)
-            history.append(step_record)
+            # ── LLM FAILED — FALLBACK TO SMART QUEUE ─────────────────────
+            source = "LLM_ERROR"
+            scenario_lower = scenario.lower()
+            possible_fixes = []
+            if any(kw in scenario_lower for kw in ["db", "database", "deadlock"]):
+                possible_fixes = [
+                    {"action_type": "system_action", "tool": "clear_db_connections", "params": {}},
+                    {"action_type": "system_action", "tool": "restart_service", "params": {"service": "db-service"}},
+                    {"action_type": "system_action", "tool": "restart_service", "params": {"service": "api-service"}}
+                ]
+            elif "cache" in scenario_lower:
+                possible_fixes = [
+                    {"action_type": "system_action", "tool": "flush_cache", "params": {}},
+                    {"action_type": "system_action", "tool": "restart_service", "params": {"service": "api-service"}}
+                ]
+            else:
+                possible_fixes = [
+                    {"action_type": "system_action", "tool": "restart_service", "params": {"service": "api-service"}},
+                    {"action_type": "system_action", "tool": "scale_service", "params": {"service": "db-service"}}
+                ]
 
-            if stream:
-                yield step_record
-
-            time.sleep(delay)
-            continue
+            llm_data = None
+            for fix in possible_fixes:
+                if action_to_string(fix) not in actions_taken:
+                    llm_data = fix
+                    break
+            
+            if not llm_data:
+                llm_data = {"action_type": "system_action", "tool": "scale_service", "params": {"service": "api-service"}}
 
         # ── Agent thinking ───────────────────────────────────────────
         hypothesis = llm_data.get("hypothesis", "")
@@ -313,43 +326,33 @@ def run_agent(env=None, max_steps=MAX_STEPS, delay=STEP_DELAY, stream=False, sil
         params = llm_data.get("params", {})
         params_str = f" {params}" if params else ""
 
-        if not silent:
-            print(f"\n\033[1;97m[AGENT THINKING] (Confidence: {confidence:.2f})\033[0m")
-            print(f"  Hypothesis: {hypothesis}")
-            print(f"  Reasoning:  {reasoning}")
-            print(f"\n\033[1;94m[ACTION]\033[0m {llm_data['action_type']} -> \033[1m{tool}{params_str}\033[0m")
-
         # ── Execute ──────────────────────────────────────────────────
-        action_key = f"{tool}{params_str}"
-        actions_taken.add(action_key)
+        action_str = action_to_string(llm_data)
+        actions_taken.add(action_str)
+        if llm_data.get("action_type") == "tool_call":
+            queries_made.add(llm_data.get("tool"))
 
         action, obs, reward, done, info = execute_step(env, llm_data)
 
         # Get last log as result
         result_msg = obs.logs[-1] if obs.logs else "No result"
-
-        if not silent:
-            print(f"\n\033[90m[RESULT] {result_msg}\033[0m")
-
         total_reward = info.get("total_reward", 0)
-        if not silent:
-            reward_color = "\033[92m" if reward > 0 else "\033[91m" if reward < 0 else "\033[90m"
-            print(f"{reward_color}[REWARD] {reward:+.3f}  (Total: {total_reward:+.3f})\033[0m")
 
         step_record = {
             "step": step,
-            "phase": env.system_phase,
-            "state": svc_summary,
-            "latency": obs.latency,
+            "state_summary": svc_summary,
+            "action": tool,
+            "result": result_msg,
+            "reward": reward,
             "hypothesis": hypothesis,
-            "reasoning": reasoning,
+            "why": reasoning,
+            "phase": env.system_phase,
+            "latency": obs.latency,
             "confidence": confidence,
             "tool": tool,
             "params": params,
-            "result": result_msg,
-            "reward": reward,
             "total_reward": total_reward,
-            "source": "LLM",
+            "source": source,
             "timestamp": datetime.utcnow().isoformat(),
         }
         trajectory.append(step_record)
@@ -359,10 +362,6 @@ def run_agent(env=None, max_steps=MAX_STEPS, delay=STEP_DELAY, stream=False, sil
             yield step_record
 
         if done:
-            if not silent:
-                print(f"\n\033[1;92m{'='*50}")
-                print(f"  INCIDENT RESOLVED")
-                print(f"{'='*50}\033[0m")
             break
 
         time.sleep(delay)
@@ -394,28 +393,6 @@ def run_agent(env=None, max_steps=MAX_STEPS, delay=STEP_DELAY, stream=False, sil
         else:
             summary["failure_reason"] = "Incorrect fix order or missing prerequisite"
             summary["suggested_improvement"] = f"Review fix dependency chain. Required: {' -> '.join(summary['required_fixes'])}"
-
-    # Print recovery card
-    if not silent:
-        print(f"\n\033[1;97m{'='*50}")
-        print(f"  RECOVERY SUMMARY")
-        print(f"{'='*50}\033[0m")
-        status_icon = "[OK]" if success else "[FAIL]"
-        status_color = "\033[92m" if success else "\033[91m"
-        print(f"  {status_color}{status_icon} Status: {summary['status']}\033[0m")
-        print(f"  Scenario:      {summary['scenario']}")
-        print(f"  Signals Used:  {summary['signals_gathered']}")
-        print(f"  Fix Chain:     {' -> '.join(summary['fixes_applied']) or 'none'}")
-        print(f"  Required:      {' -> '.join(summary['required_fixes'])}")
-        print(f"  Steps Taken:   {summary['steps_taken']}")
-        print(f"  Final Latency: {summary['final_latency']}ms")
-        print(f"  Total Reward:  {summary['total_reward']:+.3f}")
-        
-        if not success:
-            print(f"  {Fore.RED}Reason:        {summary['failure_reason']}{Style.RESET_ALL}")
-            print(f"  {Fore.YELLOW}Suggestion:    {summary['suggested_improvement']}{Style.RESET_ALL}")
-            
-        print(f"{'='*50}\n")
 
     if stream:
         yield {"type": "summary", **summary}

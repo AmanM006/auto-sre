@@ -9,25 +9,19 @@ Interacts with the ACRS FastAPI backend.
 import argparse
 import sys
 import os
-import re
 import json
 import requests
 import colorama
 from colorama import Fore, Style
+from shared_formatter import (
+    StepData, format_step, format_episode_summary,
+    C_CYAN, C_TEXT, C_MUTED, C_GREEN, C_RED, C_GOLD, R,
+    _format_services,
+)
 
 colorama.init(autoreset=True)
 
 DEFAULT_HOST = "http://localhost:8000"
-
-# ── COLORS ────────────────────────────────────────────────────────────────────
-C_CYAN  = '\033[38;2;0;220;255m'
-C_BLUE  = '\033[38;2;40;160;255m'
-C_TEXT  = '\033[38;2;220;230;240m'
-C_MUTED = '\033[38;2;100;115;130m'
-C_GREEN = '\033[38;2;0;255;160m'
-C_RED   = '\033[38;2;255;80;80m'
-C_GOLD  = '\033[38;2;255;200;60m'
-R       = '\033[0m'
 
 VIEW_MODE = "clean"  # set globally once args are parsed
 
@@ -35,35 +29,26 @@ VIEW_MODE = "clean"  # set globally once args are parsed
 # ── BANNER ────────────────────────────────────────────────────────────────────
 
 def print_welcome_banner():
-    """Prints a customized, cyber-themed welcome banner for ACRS."""
-    # True color ANSI escape sequences for a cool cyan/blue theme
-    C_CYAN = '\033[38;2;0;210;255m'
     C_BLUE = '\033[38;2;0;130;255m'
-    C_TEXT = '\033[38;2;235;235;235m'
-    C_MUTED = '\033[38;2;120;130;140m'
-    C_GREEN = '\033[38;2;0;255;150m'
-    RESET = '\033[0m'
-    
-    cwd = os.getcwd()
+
+    cwd     = os.getcwd()
     cwd_str = cwd if len(cwd) <= 14 else "..." + cwd[-11:]
-        
-    print(f"\n{C_CYAN}╔══ ACRS CLI {C_TEXT}v1.0.0{C_CYAN} {'═'*58}╗{RESET}")
-    print(f"{C_CYAN}║{RESET}                                                                             {C_CYAN}║{RESET}")
-    print(f"{C_CYAN}║{C_BLUE}      ▄█████▄        {C_CYAN}SYSTEM STATUS: {C_GREEN}ONLINE                                   {C_CYAN}║{RESET}")
-    print(f"{C_CYAN}║{C_BLUE}      ██▄▄▄██        {C_MUTED}{'-'*52}    {C_CYAN}║{RESET}")
-    print(f"{C_CYAN}║{C_BLUE}      ███████        {C_TEXT}Quick Start:                                            {C_CYAN}║{RESET}")
-    print(f"{C_CYAN}║{C_BLUE}      ██▄▄▄██        {C_TEXT}• Run {C_CYAN}`acrs reset`{C_TEXT} to init a chaos scenario             {C_CYAN}║{RESET}")
-    print(f"{C_CYAN}║{C_BLUE}      ▀█████▀        {C_TEXT}• Run {C_CYAN}`acrs run`{C_TEXT} to start the autonomous agent          {C_CYAN}║{RESET}")
-    print(f"{C_CYAN}║{RESET}                                                                             {C_CYAN}║{RESET}")
-    print(f"{C_CYAN}║{C_CYAN}   Autonomous SRE    {C_TEXT}Recent Activity:                                        {C_CYAN}║{RESET}")
-    print(f"{C_CYAN}║{C_MUTED}   {cwd_str:<14}    {C_MUTED}No recent incidents                                     {C_CYAN}║{RESET}")
-    print(f"{C_CYAN}║{RESET}                                                                             {C_CYAN}║{RESET}")
-    print(f"{C_CYAN}╚{'═'*77}╝{RESET}\n")
+
+    print(f"\n{C_CYAN}╔══ ACRS CLI {C_TEXT}v1.0.0{C_CYAN} {'═'*58}╗\033[0m")
+    print(f"{C_CYAN}║\033[0m                                                                             {C_CYAN}║\033[0m")
+    print(f"{C_CYAN}║{C_BLUE}      ▄█████▄        {C_CYAN}SYSTEM STATUS: {C_GREEN}ONLINE                                   {C_CYAN}║\033[0m")
+    print(f"{C_CYAN}║{C_BLUE}      ██▄▄▄██        {C_MUTED}{'-'*52}    {C_CYAN}║\033[0m")
+    print(f"{C_CYAN}║{C_BLUE}      ███████        {C_TEXT}Quick Start:                                            {C_CYAN}║\033[0m")
+    print(f"{C_CYAN}║{C_BLUE}      ██▄▄▄██        {C_TEXT}• Run {C_CYAN}`acrs reset`{C_TEXT} to init a chaos scenario             {C_CYAN}║\033[0m")
+    print(f"{C_CYAN}║{C_BLUE}      ▀█████▀        {C_TEXT}• Run {C_CYAN}`acrs run`{C_TEXT} to start the autonomous agent          {C_CYAN}║\033[0m")
+    print(f"{C_CYAN}║\033[0m                                                                             {C_CYAN}║\033[0m")
+    print(f"{C_CYAN}║{C_CYAN}   Autonomous SRE    {C_TEXT}Recent Activity:                                        {C_CYAN}║\033[0m")
+    print(f"{C_CYAN}║{C_MUTED}   {cwd_str:<14}    {C_MUTED}No recent incidents                                     {C_CYAN}║\033[0m")
+    print(f"{C_CYAN}║\033[0m                                                                             {C_CYAN}║\033[0m")
+    print(f"{C_CYAN}╚{'═'*77}╝\033[0m\n")
+
 
 # ── PRINT HELPERS ─────────────────────────────────────────────────────────────
-
-def print_separator(char='─', width=52):
-    print(f"{C_MUTED}{char * width}{R}")
 
 def print_error(msg):
     print(f"{C_RED}[ERROR] {msg}{R}")
@@ -74,111 +59,56 @@ def print_success(msg):
 def print_warning(msg):
     print(f"{C_GOLD}[WARN] {msg}{R}")
 
-def format_state_summary(services):
-    if not services:
-        return "Unknown"
-    parts = []
-    for name, info in services.items():
-        status = info.get('status', 'unknown').upper()
-        color = C_GREEN if status == 'RUNNING' else C_RED if status in ('DOWN', 'OVERLOADED') else C_GOLD
-        parts.append(f"{color}{name.upper()}: {status}{R}")
-    return " | ".join(parts)
 
-def status_icon(done):
-    return f"{C_GREEN}✔{R}" if done else f"{C_RED}✘{R}"
-
-
-# ── STEP CARD ─────────────────────────────────────────────────────────────────
-
-def _print_step_card(step_data, view=None):
+def _api_response_to_step_data(data: dict, step_num: int) -> StepData:
     """
-    Print a formatted step card.
-    view: 'clean' | 'debug' | 'silent'
+    Convert a raw API step response dict into a StepData object
+    so format_step() can render it identically to inference output.
     """
-    mode = view or VIEW_MODE
-    if mode == "silent":
-        return
+    obs = data.get("observation", {})
+    state_summary = None
+    if obs:
+        state_summary = {
+            "services": obs.get("services", {}),
+            "latency":  obs.get("latency"),
+        }
+    elif "state_summary" in data:
+        state_summary = data["state_summary"]
+    elif "state" in data:
+        state_summary = data["state"]
 
-    step_num = step_data.get("step", "?")
-    reward   = step_data.get("reward", 0.0)
-    total    = step_data.get("total_reward", None)
+    action = data.get("action") or data.get("tool", "unknown")
 
-    print()
-    print(f"{C_CYAN}[STEP {step_num}]{R}")
-    print_separator()
-
-    # ── STATE ────────────────────────────────────────────────────────────────
-    state = step_data.get("state") or step_data.get("observation")
-    if state:
-        services = state.get("services", {})
-        latency  = state.get("latency", "?")
-        svc_str  = format_state_summary(services)
-        print(f"{C_CYAN}STATE:{R}")
-        print(f"  {svc_str} | {C_MUTED}LATENCY: {latency}ms{R}")
-
-    # ── SIGNAL (db metrics etc.) ──────────────────────────────────────────────
-    if state:
-        db = state.get("services", {}).get("db-service", {})
-        api = state.get("services", {}).get("api-service", {})
-        signals = []
-        if db.get("cpu") is not None:
-            signals.append(f"DB CPU: {db['cpu']}%  Connections: {db.get('connections', '?')}/{db.get('max_connections', '?')}")
-        if api.get("cpu") is not None:
-            signals.append(f"API CPU: {api['cpu']}%")
-        if signals:
-            print(f"{C_CYAN}SIGNAL:{R}")
-            for s in signals:
-                print(f"  {C_MUTED}{s}{R}")
-
-    # ── DEBUG: hypothesis ────────────────────────────────────────────────────
-    if mode == "debug":
-        if step_data.get("hypothesis"):
-            print(f"{C_GOLD}THINK:{R}  {step_data['hypothesis']}")
-        if step_data.get("why"):
-            print(f"{C_GOLD}WHY:{R}    {step_data['why']}")
-
-    # ── ACTION ───────────────────────────────────────────────────────────────
-    tool   = step_data.get('tool', 'unknown')
-    params = step_data.get('params', {})
-    param_str = ""
-    if params:
-        param_str = "  " + "  ".join(f"{k}={v}" for k, v in params.items())
-    print(f"{C_CYAN}ACTION:{R}")
-    print(f"  {C_TEXT}{tool}{R}{C_MUTED}{param_str}{R}")
-
-    # ── RESULT ───────────────────────────────────────────────────────────────
-    result = step_data.get('result', '')
-    print(f"{C_CYAN}RESULT:{R}")
-    print(f"  {result}")
-
-    # ── REWARD ───────────────────────────────────────────────────────────────
-    r_color = C_GREEN if reward >= 0 else C_RED
-    total_str = f"  (Total: {r_color}{total:+.2f}{R})" if total is not None else ""
-    print(f"{C_CYAN}REWARD:{R}")
-    print(f"  {r_color}{reward:+.3f}{R}{total_str}")
-
-    # ── DONE ─────────────────────────────────────────────────────────────────
-    if step_data.get("done"):
-        print()
-        print(f"  {C_GREEN}✅ INCIDENT RESOLVED{R}")
-
-    print_separator()
+    return StepData(
+        step          = data.get("step", step_num),
+        state_summary = state_summary,
+        action        = action,
+        params        = data.get("params", {}),
+        result        = data.get("result", ""),
+        reward        = data.get("reward", 0.0),
+        total_reward  = data.get("total_reward", 0.0),
+        done          = data.get("done", False),
+        hypothesis    = data.get("hypothesis", ""),
+        why           = data.get("why", ""),
+        source        = data.get("source", ""),
+    )
 
 
 # ── FINAL SUMMARY ─────────────────────────────────────────────────────────────
 
-def print_final_summary(data, view=None):
+def print_final_summary(data: dict) -> None:
     """Print the clean final summary block."""
-    mode = view or VIEW_MODE
     status   = data.get('status', 'UNKNOWN')
     resolved = status == "RESOLVED"
     color    = C_GREEN if resolved else C_RED
     icon     = "✔" if resolved else "✘"
 
+    _sep = lambda c='─', w=52: f"{C_MUTED}{c * w}{R}"
+
     print()
-    print_separator('═', 52)
+    print(_sep('═'))
     print(f"{C_CYAN}  FINAL SUMMARY{R}")
-    print_separator('═', 52)
+    print(_sep('═'))
     print(f"  {color}{icon} Scenario:{R}       {data.get('scenario', '?')}")
     print(f"  {color}{icon} Status:{R}         {color}{status}{R}")
     print(f"  {color}{icon} Steps Taken:{R}    {data.get('steps_taken', '?')}")
@@ -197,7 +127,7 @@ def print_final_summary(data, view=None):
         print(f"  {C_RED}Reason:{R}  {data.get('failure_reason', 'Unknown')}")
         print(f"  {C_GOLD}Tip:{R}     {data.get('suggested_improvement', '')}")
 
-    print_separator('═', 52)
+    print(_sep('═'))
     print()
 
 
@@ -213,7 +143,7 @@ def cmd_reset(args):
         print(f"  {C_CYAN}Scenario:{R} {data.get('scenario')}")
         print(f"  {C_CYAN}Phase:{R}    {data.get('phase')}")
         obs     = data.get('observation', {})
-        svc_str = format_state_summary(obs.get('services', {}))
+        svc_str = _format_services(obs.get('services', {}))
         print(f"  {C_CYAN}State:{R}    {svc_str} | Latency: {obs.get('latency')}ms")
     except Exception as e:
         print_error(f"Failed to reset environment: {e}")
@@ -229,11 +159,13 @@ def cmd_state(args):
             print_warning("Environment not initialized. Run 'reset' first.")
             return
 
-        print_separator()
+        _sep = lambda: print(f"{C_MUTED}{'─' * 52}{R}")
+
+        _sep()
         print(f"{C_CYAN}CURRENT STATE{R}")
         print(f"  Scenario: {data.get('scenario')}")
 
-        phase = data.get('phase', '')
+        phase   = data.get('phase', '')
         p_color = C_GREEN if phase == 'NORMAL' else C_GOLD
         print(f"  Phase:    {p_color}{phase}{R}")
         print(f"  Latency:  {data.get('latency')}ms")
@@ -246,7 +178,7 @@ def cmd_state(args):
             color  = C_GREEN if status == 'RUNNING' else C_RED if status in ('DOWN', 'OVERLOADED') else C_GOLD
             print(f"  {name:<18} {color}{status:<12}{R} CPU: {info.get('cpu')}%  MEM: {info.get('memory')}%")
 
-        print_separator()
+        _sep()
     except Exception as e:
         print_error(f"Failed to fetch state: {e}")
 
@@ -256,7 +188,8 @@ def cmd_logs(args):
         res = requests.get(f"{args.host}/api/logs", timeout=5)
         res.raise_for_status()
         logs = res.json().get("logs", [])
-        print_separator()
+
+        print(f"{C_MUTED}{'─' * 52}{R}")
         print(f"{C_CYAN}SYSTEM LOGS{R}")
 
         if not logs:
@@ -272,7 +205,7 @@ def cmd_logs(args):
                 else:
                     print(f"  {C_MUTED}{log}{R}")
 
-        print_separator()
+        print(f"{C_MUTED}{'─' * 52}{R}")
     except Exception as e:
         print_error(f"Failed to fetch logs: {e}")
 
@@ -291,20 +224,15 @@ def cmd_step(args):
             params["service"] = service
 
     action_type = "tool_call" if (tool.startswith("get_") or tool == "clear_db_connections") else "system_action"
-    payload = {"action_type": action_type, "tool": tool, "params": params}
+    payload     = {"action_type": action_type, "tool": tool, "params": params}
 
     try:
         res = requests.post(f"{args.host}/api/agent/step", json=payload, timeout=10)
         res.raise_for_status()
         data = res.json()
 
-        if "state" not in data and "observation" in data:
-            data["state"] = {
-                "services": data["observation"]["services"],
-                "latency":  data["observation"]["latency"],
-            }
-
-        _print_step_card(data, view=args.view)
+        step_data = _api_response_to_step_data(data, step_num=1)
+        format_step(step_data, mode=args.view)
 
         if data.get("done"):
             print_success("Incident resolved!")
@@ -323,17 +251,19 @@ def cmd_explain(args):
             print_warning("No active or completed incident to explain.")
             return
 
-        print_separator('═', 52)
+        _sep = lambda c='─', w=52: print(f"{C_MUTED}{c * w}{R}")
+
+        _sep('═')
         print(f"{C_CYAN}  POST-MORTEM REPORT{R}")
-        print_separator('═', 52)
+        _sep('═')
 
         print(f"\n{C_CYAN}Root Cause:{R}    {data.get('scenario', '?')}")
 
-        req_fixes = data.get('required_fixes', [])
-        diagnosis = []
-        if "scale_db" in req_fixes:        diagnosis.append("DB connections saturated under load")
-        if "restart_api" in req_fixes:     diagnosis.append("API thread pool exhausted")
-        if "flush_cache" in req_fixes:     diagnosis.append("Cache locks not released")
+        req_fixes  = data.get('required_fixes', [])
+        diagnosis  = []
+        if "scale_db"          in req_fixes: diagnosis.append("DB connections saturated under load")
+        if "restart_api"       in req_fixes: diagnosis.append("API thread pool exhausted")
+        if "flush_cache"       in req_fixes: diagnosis.append("Cache locks not released")
         if "clear_connections" in req_fixes: diagnosis.append("DB connection pool exhausted")
         if not diagnosis:
             diagnosis.append("System experiencing unexpected load or failure")
@@ -351,7 +281,7 @@ def cmd_explain(args):
         print(f"\n{C_CYAN}Outcome:{R}")
         print(f"  {o_color}{outcome} in {data.get('step', 0)} steps.{R}")
 
-        print_separator('═', 52)
+        _sep('═')
 
     except Exception as e:
         print_error(f"Failed to fetch state for explanation: {e}")
@@ -361,6 +291,8 @@ def cmd_run(args):
     view = args.view
     print(f"Starting autonomous agent at {args.host}...\n")
     import time
+
+    step_counter = 0
 
     try:
         with requests.get(f"{args.host}/api/agent/run", stream=True, timeout=60) as res:
@@ -383,21 +315,22 @@ def cmd_run(args):
                     if view != "silent":
                         print(f"{C_CYAN}>>> Scenario: {C_TEXT}{data.get('scenario')}{R}  {C_MUTED}({data.get('phase')}){R}")
                         print(f"{C_MUTED}Agent analyzing system state...{R}\n")
+                    step_counter = 0
                     time.sleep(0.3)
 
                 elif event_type == "summary":
                     summary = {
-                        "scenario":      data.get("scenario", "?"),
-                        "status":        data.get("status", "?"),
-                        "steps_taken":   data.get("steps_taken"),
-                        "signals_used":  data.get("signals_used", "?"),
-                        "fixes_applied": data.get("fixes_applied", []),
-                        "final_latency": data.get("final_latency"),
-                        "total_reward":  data.get("total_reward", 0),
+                        "scenario":              data.get("scenario", "?"),
+                        "status":                data.get("status", "?"),
+                        "steps_taken":           data.get("steps_taken"),
+                        "signals_used":          data.get("signals_used", "?"),
+                        "fixes_applied":         data.get("fixes_applied", []),
+                        "final_latency":         data.get("final_latency"),
+                        "total_reward":          data.get("total_reward", 0),
                         "failure_reason":        data.get("failure_reason"),
                         "suggested_improvement": data.get("suggested_improvement"),
                     }
-                    print_final_summary(summary, view=view)
+                    print_final_summary(summary)
 
                 elif event_type == "done":
                     break
@@ -407,13 +340,9 @@ def cmd_run(args):
                     break
 
                 else:
-                    # Attach unified state block if needed
-                    if "state" not in data and "observation" in data:
-                        data["state"] = {
-                            "services": data["observation"].get("services", {}),
-                            "latency":  data["observation"].get("latency"),
-                        }
-                    _print_step_card(data, view=view)
+                    step_counter += 1
+                    step_data = _api_response_to_step_data(data, step_num=step_counter)
+                    format_step(step_data, mode=view)
                     time.sleep(0.2)
 
     except requests.exceptions.ReadTimeout:
@@ -450,7 +379,7 @@ def main():
     subparsers.add_parser("explain", help="Post-mortem explanation")
     subparsers.add_parser("logs",    help="Show recent logs")
 
-    args = parser.parse_args()
+    args      = parser.parse_args()
     VIEW_MODE = args.view
 
     try:
