@@ -7,6 +7,208 @@ const API = '';  // Same origin
 let isRunning = false;
 let eventSource = null;
 
+// ── Telemetry State ─────────────────────────────────────────────────────────
+
+let latencyChart = null;
+let cpuChart = null;
+let memChart = null;
+const MAX_DATAPOINTS = 20;
+
+let telemetryData = {
+    labels: [],
+    latency: [],
+    cpuApi: [],
+    cpuDb: [],
+    cpuCache: [],
+    memApi: [],
+    memDb: [],
+    memCache: []
+};
+
+function initCharts() {
+    const commonOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 300 },
+        plugins: {
+            legend: {
+                display: true,
+                position: 'top',
+                labels: { color: '#94a3b8', font: { family: "'JetBrains Mono', monospace", size: 10 } }
+            },
+            tooltip: {
+                backgroundColor: 'rgba(17, 24, 39, 0.9)',
+                titleFont: { family: "'JetBrains Mono', monospace", size: 11 },
+                bodyFont: { family: "'JetBrains Mono', monospace", size: 11 },
+                borderColor: 'rgba(71, 85, 105, 0.4)',
+                borderWidth: 1
+            }
+        },
+        scales: {
+            x: {
+                display: false,
+                grid: { display: false }
+            },
+            y: {
+                beginAtZero: true,
+                grid: { color: 'rgba(71, 85, 105, 0.2)' },
+                ticks: { color: '#64748b', font: { family: "'JetBrains Mono', monospace", size: 10 } }
+            }
+        }
+    };
+
+    const ctxLatency = document.getElementById('latencyChart').getContext('2d');
+    latencyChart = new Chart(ctxLatency, {
+        type: 'line',
+        data: {
+            labels: telemetryData.labels,
+            datasets: [{
+                label: 'E2E Latency (ms)',
+                data: telemetryData.latency,
+                borderColor: '#10b981',
+                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                borderWidth: 2,
+                pointRadius: 2,
+                fill: true,
+                tension: 0.3
+            }]
+        },
+        options: commonOptions
+    });
+
+    const ctxCpu = document.getElementById('cpuChart').getContext('2d');
+    cpuChart = new Chart(ctxCpu, {
+        type: 'line',
+        data: {
+            labels: telemetryData.labels,
+            datasets: [
+                {
+                    label: 'API CPU',
+                    data: telemetryData.cpuApi,
+                    borderColor: '#3b82f6',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.3
+                },
+                {
+                    label: 'DB CPU',
+                    data: telemetryData.cpuDb,
+                    borderColor: '#ef4444',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.3
+                },
+                {
+                    label: 'Cache CPU',
+                    data: telemetryData.cpuCache,
+                    borderColor: '#f59e0b',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.3
+                }
+            ]
+        },
+        options: {
+            ...commonOptions,
+            scales: {
+                ...commonOptions.scales,
+                y: { ...commonOptions.scales.y, max: 100 }
+            }
+        }
+    });
+
+    const ctxMem = document.getElementById('memChart').getContext('2d');
+    memChart = new Chart(ctxMem, {
+        type: 'line',
+        data: {
+            labels: telemetryData.labels,
+            datasets: [
+                {
+                    label: 'API MEM',
+                    data: telemetryData.memApi,
+                    borderColor: '#0ea5e9', // lighter blue
+                    borderWidth: 2,
+                    borderDash: [5, 5],
+                    pointRadius: 0,
+                    tension: 0.3
+                },
+                {
+                    label: 'DB MEM',
+                    data: telemetryData.memDb,
+                    borderColor: '#f43f5e', // lighter red
+                    borderWidth: 2,
+                    borderDash: [5, 5],
+                    pointRadius: 0,
+                    tension: 0.3
+                },
+                {
+                    label: 'Cache MEM',
+                    data: telemetryData.memCache,
+                    borderColor: '#fbbf24', // lighter yellow
+                    borderWidth: 2,
+                    borderDash: [5, 5],
+                    pointRadius: 0,
+                    tension: 0.3
+                }
+            ]
+        },
+        options: {
+            ...commonOptions,
+            scales: {
+                ...commonOptions.scales,
+                y: { ...commonOptions.scales.y, max: 100 }
+            }
+        }
+    });
+}
+
+function resetTelemetry() {
+    telemetryData.labels.length = 0;
+    telemetryData.latency.length = 0;
+    telemetryData.cpuApi.length = 0;
+    telemetryData.cpuDb.length = 0;
+    telemetryData.cpuCache.length = 0;
+    telemetryData.memApi.length = 0;
+    telemetryData.memDb.length = 0;
+    telemetryData.memCache.length = 0;
+    if (latencyChart) latencyChart.update();
+    if (cpuChart) cpuChart.update();
+    if (memChart) memChart.update();
+}
+
+function updateTelemetry(state) {
+    if (!latencyChart || !cpuChart || !memChart) return;
+
+    const timeLabel = new Date().toLocaleTimeString([], { hour12: false });
+    telemetryData.labels.push(timeLabel);
+
+    telemetryData.latency.push(state.latency || 0);
+
+    const svcs = state.services || {};
+    telemetryData.cpuApi.push(svcs['api-service']?.cpu || 0);
+    telemetryData.cpuDb.push(svcs['db-service']?.cpu || 0);
+    telemetryData.cpuCache.push(svcs['cache-service']?.cpu || 0);
+
+    telemetryData.memApi.push(svcs['api-service']?.memory || 0);
+    telemetryData.memDb.push(svcs['db-service']?.memory || 0);
+    telemetryData.memCache.push(svcs['cache-service']?.memory || 0);
+
+    if (telemetryData.labels.length > MAX_DATAPOINTS) {
+        telemetryData.labels.shift();
+        telemetryData.latency.shift();
+        telemetryData.cpuApi.shift();
+        telemetryData.cpuDb.shift();
+        telemetryData.cpuCache.shift();
+        telemetryData.memApi.shift();
+        telemetryData.memDb.shift();
+        telemetryData.memCache.shift();
+    }
+
+    latencyChart.update();
+    cpuChart.update();
+    memChart.update();
+}
+
 // ── Phase Banner ────────────────────────────────────────────────────────────
 
 const PHASE_CONFIG = {
@@ -241,6 +443,7 @@ function updateFromState(state) {
     updateServices(state.services || {});
     updateFixChain(state.required_fixes, state.applied_fixes);
     updateLogs(state.logs || []);
+    updateTelemetry(state);
 
     const scenario = document.getElementById('scenario-name');
     if (state.scenario) scenario.textContent = state.scenario;
@@ -289,6 +492,11 @@ async function resetSystem() {
         const stateRes = await fetch(API + '/api/state');
         const stateData = await stateRes.json();
         updateFixChain(stateData.required_fixes, stateData.applied_fixes);
+
+        resetTelemetry();
+        if (data.observation) {
+            updateTelemetry({ latency: data.observation.latency, services: data.observation.services });
+        }
 
         setButtonsEnabled(false);
     } catch (e) {
@@ -348,20 +556,45 @@ async function runAgent() {
     };
 }
 
+function toggleManualControls() {
+    const isManual = document.querySelector('input[name="mode"][value="manual"]').checked;
+    const manualDiv = document.getElementById('manual-controls');
+    const singleStepBtn = document.getElementById('btn-step');
+    const runBtn = document.getElementById('btn-run');
+    
+    if (isManual) {
+        manualDiv.classList.remove('hidden');
+        singleStepBtn.classList.add('hidden');
+        runBtn.classList.add('hidden');
+    } else {
+        manualDiv.classList.add('hidden');
+        singleStepBtn.classList.remove('hidden');
+        runBtn.classList.remove('hidden');
+    }
+}
+
+function toggleServiceSelect() {
+    const tool = document.getElementById('manual-tool').value;
+    const svcGroup = document.getElementById('service-select-group');
+    if (tool === 'restart_service' || tool === 'scale_service') {
+        svcGroup.classList.remove('hidden');
+    } else {
+        svcGroup.classList.add('hidden');
+    }
+}
+
 async function stepAgent() {
-    // Manual step mode — prompt user for action (simplified: use first available diagnostic)
+    // Left for backwards compatibility if Single Step button is still visible
     if (!document.querySelector('input[name="mode"][value="manual"]').checked) {
-        // If in autonomous mode, just run
         return runAgent();
     }
+}
 
-    const tool = prompt('Enter tool name (e.g., get_db_metrics, flush_cache, restart_service):');
-    if (!tool) return;
-
+async function executeManualStep() {
+    const tool = document.getElementById('manual-tool').value;
     let params = {};
     if (tool === 'restart_service' || tool === 'scale_service') {
-        const service = prompt('Enter service name (api-service, db-service):');
-        if (service) params = { service };
+        params.service = document.getElementById('manual-service').value;
     }
 
     const actionType = ['get_db_metrics', 'get_network_latency', 'get_error_logs', 'get_cache_status', 'clear_db_connections']
@@ -427,6 +660,7 @@ function escapeHtml(text) {
 // ── Init ────────────────────────────────────────────────────────────────────
 
 window.addEventListener('load', async () => {
+    initCharts();
     try {
         const res = await fetch(API + '/api/state');
         const state = await res.json();

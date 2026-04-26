@@ -9,6 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <!-- Phase Banner -->
@@ -56,13 +57,39 @@
                 </div>
                 <div class="mode-toggle">
                     <label class="toggle-label">
-                        <input type="radio" name="mode" value="autonomous" checked>
+                        <input type="radio" name="mode" value="autonomous" checked onchange="toggleManualControls()">
                         <span>&#129302; Autonomous</span>
                     </label>
                     <label class="toggle-label">
-                        <input type="radio" name="mode" value="manual">
+                        <input type="radio" name="mode" value="manual" onchange="toggleManualControls()">
                         <span>&#129504; Step-by-Step</span>
                     </label>
+                </div>
+
+                <div id="manual-controls" class="hidden" style="margin-top: 15px; background: #1a1d24; padding: 12px; border-radius: 8px; border: 1px solid #2e3038;">
+                    <label style="font-size: 11px; font-weight: 600; letter-spacing: 0.5px; color: #9ca3af; margin-bottom: 6px; display: block; text-transform: uppercase;">Select Action</label>
+                    <select id="manual-tool" onchange="toggleServiceSelect()" style="width: 100%; margin-bottom: 10px; background: #111318; color: #e2e4e9; border: 1px solid #2e3038; padding: 8px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 12px;">
+                        <option value="get_network_latency">get_network_latency()</option>
+                        <option value="get_error_logs">get_error_logs()</option>
+                        <option value="get_db_metrics">get_db_metrics()</option>
+                        <option value="get_cache_status">get_cache_status()</option>
+                        <option value="clear_db_connections">clear_db_connections()</option>
+                        <option value="flush_cache">flush_cache()</option>
+                        <option value="scale_service">scale_service()</option>
+                        <option value="restart_service">restart_service()</option>
+                    </select>
+
+                    <div id="service-select-group" class="hidden">
+                        <label style="font-size: 11px; font-weight: 600; letter-spacing: 0.5px; color: #9ca3af; margin-bottom: 6px; display: block; text-transform: uppercase;">Target Service</label>
+                        <select id="manual-service" style="width: 100%; margin-bottom: 12px; background: #111318; color: #e2e4e9; border: 1px solid #2e3038; padding: 8px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 12px;">
+                            <option value="api-service">api-service</option>
+                            <option value="db-service">db-service</option>
+                        </select>
+                    </div>
+
+                    <button id="btn-execute-manual" class="btn btn-secondary" onclick="executeManualStep()" style="width: 100%; justify-content: center;">
+                        Execute Manual Step
+                    </button>
                 </div>
                 <div id="scenario-name" class="scenario-badge">No incident loaded</div>
             </section>
@@ -144,8 +171,24 @@
             </section>
         </div>
 
-        <!-- Right Column: Logs -->
+        <!-- Right Column: Telemetry + Logs -->
         <div class="col-right">
+            <!-- Telemetry Dashboard -->
+            <section class="panel telemetry-panel">
+                <h2 class="panel-title">LIVE TELEMETRY</h2>
+                <div class="charts-container">
+                    <div class="chart-wrapper">
+                        <canvas id="latencyChart"></canvas>
+                    </div>
+                    <div class="chart-wrapper">
+                        <canvas id="cpuChart"></canvas>
+                    </div>
+                    <div class="chart-wrapper">
+                        <canvas id="memChart"></canvas>
+                    </div>
+                </div>
+            </section>
+
             <section class="panel log-panel">
                 <h2 class="panel-title">LIVE LOG STREAM</h2>
                 <div id="log-container" class="log-container">

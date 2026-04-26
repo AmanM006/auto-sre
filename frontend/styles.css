@@ -543,6 +543,36 @@ body {
 
 .hidden { display: none !important; }
 
+/* ── Telemetry Panel ────────────────────────────────────────────────────────── */
+
+.telemetry-panel {
+    flex: 1;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+
+.charts-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    height: 100%;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.charts-container::-webkit-scrollbar { width: 4px; }
+.charts-container::-webkit-scrollbar-track { background: transparent; }
+.charts-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.chart-wrapper {
+    background: rgba(10, 14, 23, 0.5);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    height: 180px;
+    flex-shrink: 0;
+}
+
 /* ── Log Panel ──────────────────────────────────────────────────────────────── */
 
 .log-panel { flex: 1; overflow: hidden; }
