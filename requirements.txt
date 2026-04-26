@@ -5,12 +5,11 @@ python-dotenv
 openai
 gradio
 requests
-json_repair
-tqdm
-datasets
+unsloth
 trl
 peft
 accelerate
 bitsandbytes
-unsloth
+datasets
 wandb
+json_repair
