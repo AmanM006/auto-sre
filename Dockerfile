@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY . .
 
-RUN pip install fastapi uvicorn pydantic python-dotenv openai gradio
+RUN pip install -r requirements.txt
 
 EXPOSE 8000
 

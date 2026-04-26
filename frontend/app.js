@@ -559,16 +559,13 @@ async function runAgent() {
 function toggleManualControls() {
     const isManual = document.querySelector('input[name="mode"][value="manual"]').checked;
     const manualDiv = document.getElementById('manual-controls');
-    const singleStepBtn = document.getElementById('btn-step');
     const runBtn = document.getElementById('btn-run');
     
     if (isManual) {
         manualDiv.classList.remove('hidden');
-        singleStepBtn.classList.add('hidden');
         runBtn.classList.add('hidden');
     } else {
         manualDiv.classList.add('hidden');
-        singleStepBtn.classList.remove('hidden');
         runBtn.classList.remove('hidden');
     }
 }
@@ -583,12 +580,7 @@ function toggleServiceSelect() {
     }
 }
 
-async function stepAgent() {
-    // Left for backwards compatibility if Single Step button is still visible
-    if (!document.querySelector('input[name="mode"][value="manual"]').checked) {
-        return runAgent();
-    }
-}
+
 
 async function executeManualStep() {
     const tool = document.getElementById('manual-tool').value;
