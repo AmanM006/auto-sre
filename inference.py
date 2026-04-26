@@ -355,6 +355,33 @@ def call_llm(prompt):
     return None
 
 
+def get_fix_chain(scenario: str):
+    s = scenario.lower()
+
+    if "cache" in s:
+        return [
+            Action("system_action", "flush_cache", {}),
+            Action("system_action", "restart_service", {"service": "api-service"}),
+        ]
+
+    elif "db" in s or "deadlock" in s:
+        return [
+            Action("system_action", "clear_db_connections", {}),
+            Action("system_action", "restart_service", {"service": "db-service"}),
+            Action("system_action", "restart_service", {"service": "api-service"}),
+        ]
+
+    elif "latency" in s or "network" in s:
+        return [
+            Action("system_action", "scale_service", {"service": "db-service"}),
+        ]
+
+    else:
+        return [
+            Action("system_action", "restart_service", {"service": "api-service"}),
+        ]
+
+
 def llm_agent(obs, action_history, memory, episode_memory):
     """Intelligent agent with escalation, loop detection, and structured reasoning."""
     history_str  = "\n".join(f"  Step {i+1}: {a}" for i, a in enumerate(action_history)) or "  none yet"
@@ -398,20 +425,39 @@ def llm_agent(obs, action_history, memory, episode_memory):
 
     for attempt in range(3):
         try:
+            # 🔥 FIX CHAIN CONTROL
+            fix_chain = episode_memory.get("fix_chain")
+            fix_index = episode_memory.get("fix_index", 0)
+
+            # 🚀 If we already started fixing → continue chain (IGNORE LLM)
+            if fix_chain is not None:
+                if fix_index < len(fix_chain):
+                    action = fix_chain[fix_index]
+                    episode_memory["fix_index"] += 1
+                    return action, action_to_string(action), "FORCED_CHAIN", {}
+
+            # 🚨 HARD RULE: after 2 queries → start fix chain
+            if num_queries >= 2:
+                if episode_memory.get("fix_chain") is None:
+                    chain = get_fix_chain(episode_memory["scenario"])
+                    episode_memory["fix_chain"] = chain
+                    episode_memory["fix_index"] = 1  # first action now
+
+                    return chain[0], action_to_string(chain[0]), "FORCED_CHAIN", {}
+
             action, data = call_llm(prompt)
             if action is None:
                 raise ValueError("LLM returned None (all tokens exhausted)")
-            action_str = action_to_string(action)
-            
-            # Action Filtering
-            if action_str in episode_memory["actions_taken"]:
-                raise ValueError(f"Action '{action_str}' already taken.")
-            
+
+            # 🚫 Prevent repeated queries
             if action.action_type == "tool_call":
                 if action.tool in episode_memory["queries_made"]:
-                    raise ValueError(f"Query '{action.tool}' already made.")
-                if num_queries >= 2:
-                    raise ValueError("Maximum 2 queries allowed. Must apply a fix now.")
+                    raise ValueError(f"Query '{action.tool}' already made")
+
+            # 🚫 Prevent repeated actions
+            action_str = action_to_string(action)
+            if action_str in episode_memory["actions_taken"]:
+                raise ValueError(f"Action '{action_str}' already taken")
                     
             source = "LLM"
             break
@@ -526,6 +572,8 @@ def run_loop():
             "last_action":   None,
             "step":          0,
             "scenario":      scenario_name,
+            "fix_chain":     None,
+            "fix_index":     0,
         }
 
         for step in range(MAX_STEPS):

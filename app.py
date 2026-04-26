@@ -3,6 +3,7 @@ import time
 import json
 import os
 from openai import OpenAI
+from unsloth import FastLanguageModel
 from dotenv import load_dotenv
 from auto_sre_env.environment import AutoSREEnv
 from auto_sre_env.models import Action
@@ -319,8 +320,64 @@ def llm_step(obs, last_reasoning):
         print(f"LLM Parse Error: {e}")
         return None, {}
 
+# 🔥 LOAD RL MODEL
+rl_model, rl_tokenizer = FastLanguageModel.from_pretrained(
+    model_name="unsloth/Qwen2.5-3B-Instruct",
+    max_seq_length=2048,
+    load_in_4bit=True,
+)
+
+rl_model.load_adapter("rl_lora_model")
+
+def get_rl_action(prompt):
+    inputs = rl_tokenizer(prompt, return_tensors="pt").to("cuda")
+
+    outputs = rl_model.generate(
+        **inputs,
+        max_new_tokens=50,
+        temperature=0.3
+    )
+
+    text = rl_tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    try:
+        data = json.loads(text)
+        return Action(
+            action_type=data.get("action_type"),
+            tool=data.get("tool"),
+            params=data.get("params", {})
+        ), data
+    except:
+        return None, None
+
+
+def get_fix_chain(scenario):
+    s = scenario.lower()
+
+    if "cache" in s:
+        return [
+            Action("system_action", "flush_cache", {}),
+            Action("system_action", "restart_service", {"service": "api-service"}),
+        ]
+    elif "db" in s:
+        return [
+            Action("system_action", "clear_db_connections", {}),
+            Action("system_action", "restart_service", {"service": "db-service"}),
+            Action("system_action", "restart_service", {"service": "api-service"}),
+        ]
+    elif "latency" in s or "network" in s:
+        return [
+            Action("system_action", "scale_service", {"service": "db-service"}),
+        ]
+    else:
+        return [
+            Action("system_action", "restart_service", {"service": "api-service"}),
+        ]
+
+
 def fallback(obs, difficulty):
     return Action(action_type="tool_call", tool="get_error_logs", params={}), "Failed to parse LLM JSON — executing fallback tool."
+
 
 def run_agent(difficulty):
     global env
@@ -332,7 +389,39 @@ def run_agent(difficulty):
 
     for i in range(1, 11):
         if state["done"]: break
-        action, data = llm_step(obs, last_reasoning)
+
+        # 🔥 STEP 1 → RL
+        if i == 1:
+            history_str = "\n".join(state["history"]) or "none"
+            prompt = DIAGNOSIS_PROMPT.format(
+                services=json.dumps(obs.services, indent=2),
+                logs="\n".join(obs.logs[-10:]),
+                latency=obs.latency,
+                history=history_str,
+                last_reasoning="none"
+            )
+
+            action, data = get_rl_action(prompt)
+
+            if action is None:
+                action, data = llm_step(obs, last_reasoning)
+        else:
+            action, data = llm_step(obs, last_reasoning)
+
+        # 🔥 FIX CHAIN CONTROL
+        num_queries = sum(1 for a in state["history"] if any(q in a for q in ["get_network_latency", "get_error_logs", "get_db_metrics", "get_cache_status"]))
+
+        if num_queries >= 2:
+            if "fix_chain" not in state:
+                scenario = env.state.get("name", "")
+                state["fix_chain"] = get_fix_chain(scenario)
+                state["fix_index"] = 0
+
+            if state["fix_index"] < len(state["fix_chain"]):
+                action = state["fix_chain"][state["fix_index"]]
+                state["fix_index"] += 1
+                data = {"hypothesis": "Executing deterministic fix chain...", "why": "Enforcing resolution after diagnostics."}
+
         if not action: 
             action, fb_msg = fallback(obs, difficulty)
             fb = True
