@@ -454,7 +454,6 @@ function updateFromState(state) {
 function setButtonsEnabled(running) {
     isRunning = running;
     document.getElementById('btn-run').disabled = running;
-    document.getElementById('btn-step').disabled = running;
     document.getElementById('btn-reset').disabled = running;
 
     if (running) {
