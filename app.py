@@ -2,8 +2,9 @@ import gradio as gr
 import time
 import json
 import os
+import torch
+
 from openai import OpenAI
-from unsloth import FastLanguageModel
 from dotenv import load_dotenv
 from auto_sre_env.environment import AutoSREEnv
 from auto_sre_env.models import Action
@@ -20,6 +21,7 @@ if API_KEY:
 
 env   = None
 state = {"obs": None, "done": False, "steps": 0, "reward": 0.0, "history": []}
+
 
 DIAGNOSIS_PROMPT = """You are an elite SRE Incident Commander trained with reinforcement learning policies.
 
@@ -331,6 +333,8 @@ def reset_env(difficulty):
     env = AutoSREEnv(difficulty="training")
     obs = env.reset()
     state.update({"obs": obs, "done": False, "steps": 0, "reward": 0.0, "history": []})
+    state.pop("fix_chain", None)
+    state.pop("fix_index", None)
     scenario_name = env.state.get("name", "Random Incident")
     return build_ui(hint=f"Scenario loaded: {scenario_name}. Check the logs and metrics before acting.", show_action_guide=True)
 
@@ -356,67 +360,93 @@ def do_step(action_type, tool=None, params=None):
 
 def llm_step(obs, last_reasoning):
     if not client: return None, {}
-    try:
-        history_str = "\n".join(f"  step {i+1}: {a}" for i, a in enumerate(state["history"])) or "  none yet"
-        prompt = DIAGNOSIS_PROMPT.format(
-            services=json.dumps(obs.services, indent=2),
-            logs="\n".join(obs.logs[-10:]),
-            latency=obs.latency,
-            history=history_str,
-            last_reasoning=last_reasoning or "none yet",
-        )
-        resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-        )
-        raw  = resp.choices[0].message.content.strip().replace("```json","").replace("```","").strip()
-        data = json.loads(raw)
-        
-        action_type = data.get("action_type", "")
-        tool = data.get("tool", "")
-        params = data.get("params", {})
-        
-        return Action(action_type=action_type, tool=tool, params=params), data
-    except Exception as e: 
-        print(f"LLM Parse Error: {e}")
-        return None, {}
+    
+    history_str = "\n".join(f"  step {i+1}: {a}" for i, a in enumerate(state["history"])) or "  none yet"
+    prompt = DIAGNOSIS_PROMPT.format(
+        services=json.dumps(obs.services, indent=2),
+        logs="\n".join(obs.logs[-10:]),
+        latency=obs.latency,
+        history=history_str,
+        last_reasoning=last_reasoning or "none yet",
+    )
+    
+    resp = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+    )
+    raw  = resp.choices[0].message.content.strip().replace("```json","").replace("```","").strip()
+    data = json.loads(raw)
+    
+    action_type = data.get("action_type", "")
+    tool = data.get("tool", "")
+    params = data.get("params", {})
+    
+    return Action(action_type=action_type, tool=tool, params=params), data
 
-# 🔥 LOAD RL MODEL
-rl_model, rl_tokenizer = FastLanguageModel.from_pretrained(
-    model_name="unsloth/Qwen2.5-3B-Instruct",
-    max_seq_length=2048,
-    load_in_4bit=True,
-)
+RL_ENABLED = False
+rl_model = None
+rl_tokenizer = None
 
-rl_model.load_adapter("rl_lora_model")
+try:
+    import torch
+    from unsloth import FastLanguageModel
+    if torch.cuda.is_available():
+        # 🔥 LOAD RL MODEL
+        rl_model, rl_tokenizer = FastLanguageModel.from_pretrained(
+            model_name="unsloth/Qwen2.5-3B-Instruct",
+            max_seq_length=2048,
+            load_in_4bit=True,
+        )
+        rl_model.load_adapter("rl_lora_model")
+        RL_ENABLED = True
+    else:
+        print("No GPU found. Running dashboard in LLM-only mode.")
+except Exception as e:
+    print(f"RL Model Loading skipped: {e}")
 
 def get_rl_action(prompt):
-    inputs = rl_tokenizer(prompt, return_tensors="pt").to("cuda")
-
-    outputs = rl_model.generate(
-        **inputs,
-        max_new_tokens=50,
-        temperature=0.3
-    )
-
-    text = rl_tokenizer.decode(outputs[0], skip_special_tokens=True)
-
+    if not RL_ENABLED:
+        return None, None
+        
     try:
+        inputs = rl_tokenizer(prompt, return_tensors="pt").to("cuda")
+
+        outputs = rl_model.generate(
+            **inputs,
+            max_new_tokens=50,
+            temperature=0.3
+        )
+
+        text = rl_tokenizer.decode(outputs[0], skip_special_tokens=True)
+
         data = json.loads(text)
         return Action(
             action_type=data.get("action_type"),
             tool=data.get("tool"),
             params=data.get("params", {})
         ), data
-    except:
+    except Exception as e:
+        print(f"RL Action generation failed: {e}")
         return None, None
 
 
 def get_fix_chain(scenario):
     s = scenario.lower()
 
-    if "cache" in s:
+    if "hybrid" in s:
+        return [
+            Action("system_action", "scale_service", {"service": "db-service"}),
+            Action("system_action", "flush_cache", {}),
+            Action("system_action", "restart_service", {"service": "api-service"}),
+        ]
+    elif "deadlock" in s:
+        return [
+            Action("system_action", "flush_cache", {}),
+            Action("system_action", "clear_db_connections", {}),
+            Action("system_action", "restart_service", {"service": "api-service"}),
+        ]
+    elif "cache" in s:
         return [
             Action("system_action", "flush_cache", {}),
             Action("system_action", "restart_service", {"service": "api-service"}),
@@ -430,6 +460,7 @@ def get_fix_chain(scenario):
     elif "latency" in s or "network" in s:
         return [
             Action("system_action", "scale_service", {"service": "db-service"}),
+            Action("system_action", "restart_service", {"service": "api-service"}),
         ]
     else:
         return [
@@ -446,34 +477,24 @@ def run_agent(difficulty):
     env = AutoSREEnv(difficulty=difficulty)
     obs = env.reset()
     state.update({"obs": obs, "done": False, "steps": 0, "reward": 0.0, "history": []})
+    state.pop("fix_chain", None)
+    state.pop("fix_index", None)
     last_reasoning = ""
     rows = []
 
     for i in range(1, 11):
         if state["done"]: break
 
-        # 🔥 STEP 1 → RL
-        if i == 1:
-            history_str = "\n".join(state["history"]) or "none"
-            prompt = DIAGNOSIS_PROMPT.format(
-                services=json.dumps(obs.services, indent=2),
-                logs="\n".join(obs.logs[-10:]),
-                latency=obs.latency,
-                history=history_str,
-                last_reasoning="none"
-            )
+        action = None
+        data = {}
+        fb = False
 
-            action, data = get_rl_action(prompt)
-
-            if action is None:
-                action, data = llm_step(obs, last_reasoning)
-        else:
-            action, data = llm_step(obs, last_reasoning)
-
-        # 🔥 FIX CHAIN CONTROL
+        # 🔥 1. FIX CHAIN CONTROL (PREEMPTIVE)
         num_queries = sum(1 for a in state["history"] if any(q in a for q in ["get_network_latency", "get_error_logs", "get_db_metrics", "get_cache_status"]))
+        last_logs = "\n".join(obs.logs[-3:])
+        stuck_in_deps = "Missing prerequisites" in last_logs
 
-        if num_queries >= 2:
+        if num_queries >= 2 or stuck_in_deps:
             if "fix_chain" not in state:
                 scenario = env.state.get("name", "")
                 state["fix_chain"] = get_fix_chain(scenario)
@@ -482,17 +503,40 @@ def run_agent(difficulty):
             if state["fix_index"] < len(state["fix_chain"]):
                 action = state["fix_chain"][state["fix_index"]]
                 state["fix_index"] += 1
-                data = {"hypothesis": "Executing deterministic fix chain...", "why": "Enforcing resolution after diagnostics."}
+                data = {"hypothesis": "Executing deterministic fix chain...", "why": "Enforcing resolution due to dependency requirements or signal count."}
+                source = "FORCED_CHAIN"
 
+        # 🔥 2. IF NO CHAIN → STEP (RL or LLM)
+        if not action:
+            try:
+                if i == 1:
+                    history_str = "\n".join(state["history"]) or "none"
+                    prompt = DIAGNOSIS_PROMPT.format(
+                        services=json.dumps(obs.services, indent=2),
+                        logs="\n".join(obs.logs[-10:]),
+                        latency=obs.latency,
+                        history=history_str,
+                        last_reasoning="none"
+                    )
+                    action, data = get_rl_action(prompt)
+                    source = "RL"
+
+                    if action is None:
+                        action, data = llm_step(obs, last_reasoning)
+                        source = "LLM"
+                else:
+                    action, data = llm_step(obs, last_reasoning)
+                    source = "LLM"
+            except Exception as e:
+                print("🔥 ERROR:", str(e))
+                raise RuntimeError(f"Agent failed: {e}")
+
+        # 🔥 3. FALLBACKS
         if not action: 
-            action, fb_msg = fallback(obs, difficulty)
-            fb = True
-        else:
-            fb = False
-
+            raise RuntimeError("Agent failed to produce an action.")
+        
         if len(state["history"]) >= 3 and len(set(state["history"][-3:])) == 1:
-            action, fb_msg = fallback(obs, difficulty)
-            fb = True
+            raise RuntimeError("Agent is looping. Terminating.")
 
         action_str = f"{action.tool}"
         obs, reward, done, _ = env.step(action)

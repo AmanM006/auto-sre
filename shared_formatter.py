@@ -27,7 +27,7 @@ class StepData:
     __slots__ = (
         "step", "state_summary", "action", "params", "result",
         "reward", "total_reward", "done",
-        "hypothesis", "why", "source",
+        "hypothesis", "why", "source", "confidence",
     )
 
     def __init__(
@@ -39,10 +39,10 @@ class StepData:
         result: str,
         reward: float,
         total_reward: float,
-        done: bool = False,
         hypothesis: str = "",
         why: str = "",
         source: str = "",
+        confidence: float = 0.0,
     ):
         self.step          = step
         self.state_summary = state_summary
@@ -55,6 +55,7 @@ class StepData:
         self.hypothesis    = hypothesis
         self.why           = why
         self.source        = source
+        self.confidence    = confidence
 
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -116,6 +117,11 @@ def format_step(step: StepData, mode: str = "clean") -> None:
         return
 
     print(f"\n{C_CYAN}[STEP {step.step}]{R}")
+    
+    if step.confidence > 0:
+        c = C_GREEN if step.confidence >= 0.8 else C_GOLD if step.confidence >= 0.5 else C_RED
+        print(f"{C_MAG}CONFIDENCE:{R} {c}{step.confidence:.2f}{R}")
+
     print(_sep())
 
     # ── STATE ─────────────────────────────────────────────────────────────────

@@ -492,6 +492,19 @@ body {
     color: var(--accent-cyan);
 }
 
+.thinking-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.thinking-timer {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+}
+
 .trace-thinking .label {
     font-weight: 600;
     color: var(--accent-purple);

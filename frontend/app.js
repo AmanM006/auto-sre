@@ -6,6 +6,7 @@ const API = '';  // Same origin
 
 let isRunning = false;
 let eventSource = null;
+let thinkingTimer = null;   // interval handle for the reasoning timer
 
 // ── Telemetry State ─────────────────────────────────────────────────────────
 
@@ -347,14 +348,16 @@ function addTraceCard(step) {
     if (empty) empty.remove();
 
     const isError = step.source === 'LLM_ERROR';
-    const rewardCls = step.reward >= 0 ? 'positive' : 'negative';
-    const rewardStr = (step.reward >= 0 ? '+' : '') + step.reward.toFixed(3);
-    const totalStr = (step.total_reward >= 0 ? '+' : '') + step.total_reward.toFixed(3);
+    const reward = typeof step.reward === 'number' ? step.reward : 0;
+    const totalReward = typeof step.total_reward === 'number' ? step.total_reward : 0;
+    const rewardCls = reward >= 0 ? 'positive' : 'negative';
+    const rewardStr = (reward >= 0 ? '+' : '') + reward.toFixed(3);
+    const totalStr = (totalReward >= 0 ? '+' : '') + totalReward.toFixed(3);
 
     const paramsStr = step.params && Object.keys(step.params).length > 0
         ? ' ' + JSON.stringify(step.params) : '';
 
-    const conf = step.confidence !== undefined ? step.confidence : 0;
+    const conf = typeof step.confidence === 'number' ? step.confidence : 0;
     const confCls = conf >= 0.8 ? 'positive' : conf >= 0.5 ? 'warning' : 'negative';
 
     const card = document.createElement('div');
@@ -378,9 +381,9 @@ function addTraceCard(step) {
         </div>
         <div class="trace-action">\u25B6 ${escapeHtml(step.tool || '')}${escapeHtml(paramsStr)}</div>
         ` : `
-        <div class="trace-thinking">
-            <span class="label">ERROR</span>
-            LLM failed to produce valid action. Penalty applied.
+        <div class="trace-thinking" style="background: rgba(231, 76, 60, 0.05); border-left-color: var(--accent-red);">
+            <span class="label" style="color: var(--accent-red);">ERROR</span>
+            ${escapeHtml(step.message || 'LLM failed to produce valid action. Penalty applied.')}
         </div>
         `}
         <div class="trace-result">${escapeHtml(step.result || '')}</div>
@@ -391,20 +394,31 @@ function addTraceCard(step) {
 
 function showThinkingIndicator(message = 'Agent is reasoning...') {
     const container = document.getElementById('trace-container');
-    hideThinkingIndicator(); // Remove if exists
+    hideThinkingIndicator(); // Remove + clear any previous timer
 
     const div = document.createElement('div');
     div.id = 'thinking-indicator';
     div.className = 'thinking-indicator';
     div.innerHTML = `
         <div class="spinner"></div>
-        <div class="thinking-text">${message}</div>
+        <div class="thinking-body">
+            <div class="thinking-text">${message}</div>
+            <div class="thinking-timer"><span id="thinking-seconds">0</span>s elapsed</div>
+        </div>
     `;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
+
+    let elapsed = 0;
+    thinkingTimer = setInterval(() => {
+        elapsed++;
+        const el = document.getElementById('thinking-seconds');
+        if (el) el.textContent = elapsed;
+    }, 1000);
 }
 
 function hideThinkingIndicator() {
+    if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
     const el = document.getElementById('thinking-indicator');
     if (el) el.remove();
 }
@@ -572,7 +586,7 @@ async function runAgent() {
             addTraceCard(data);
             if (data.state) updateFromState(data.state);
             
-            if (!data.state.done) {
+            if (!data.state || !data.state.done) {
                 showThinkingIndicator('Analyzing results and planning next step...');
             }
 

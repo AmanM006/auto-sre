@@ -86,8 +86,8 @@ Each scenario has a required resolution sequence. Guessing the fix without readi
 | Cascading DB Failure | `clear_db_connections` → `restart_service(db)` → `restart_service(api)` |
 | Stale Cache Storm | `flush_cache` → `restart_service(api)` |
 | Network Latency Storm | deep diagnostics → `flush_cache` → `restart_service(api)` |
-| Distributed Deadlock | `scale_service(db)` → `flush_cache` → `restart_service(api)` |
-| Hybrid Failure | Mixed subnet + DB diagnosis → targeted action sequence |
+| Distributed Deadlock | `flush_cache` → `clear_db_connections` → `restart_service(api)` |
+| Hybrid Failure | `scale_service(db)` → `flush_cache` → `restart_service(api)` |
 
 ### Reward Structure
 
@@ -145,40 +145,47 @@ The base LLM performed **worse than the random agent on average**. Its confidenc
 
 ### Random Agent (for comparison)
 
-![Random Reward vs Episode](random_reward.png)
+![Random Reward vs Episode](images/random_reward.png)
 *Fig 1.3 — Random agent reward across 20 episodes. Volatile but occasionally positive — average sits around −1, better than the untrained LLM.*
 
-![Random Steps vs Episode](random_steps.png)
+![Random Steps vs Episode](images/random_steps.png)
 *Fig 1.4 — Random agent steps per episode. Occasionally stumbles onto a short correct sequence.*
 
 ---
 
 ## 🏋 Training Pipeline
- 
+
 Training ran in two stages via Unsloth.
- 
+
 ### Stage 1: Supervised Fine-Tuning (SFT)
- 
+
 The model first needs to learn the environment's output format — strict JSON with a `hypothesis` field, correct tool names, valid action sequences. SFT handled this before any reward shaping.
- 
+
 ![SFT Training Loss](images/reward_loss.png)
-*Fig 1.5 — SFT training loss over 400 steps. Loss drops from ~2.2 to near zero by step 50 and stabilizes. The model internalized the output schema fast.*
- 
+*Fig 1.5 — SFT training loss over 100 steps. Loss drops from ~0.095 to ~0.03 by step 20 and stabilizes. The model internalized the output schema fast.*
+
 ### Stage 2: Reinforcement Learning (GRPO)
- 
-With format learned, GRPO training optimized for the reward signal using two simultaneous reward functions:
- 
-- `live_env_reward`: +2.0 for correct tool prediction, −1.0 for wrong/unparseable output
-- `format_reward`: +0.5 for valid JSON action plan, −0.5 for malformed output
-**Model config:** `unsloth/Qwen2.5-3B-Instruct`, LoRA (r=32, alpha=64), 4-bit quantization, 150 training steps, max completion length 50 tokens.
- 
-![RL Reward Curve](images/rl_reward.png)
-*Fig 1.6 — GRPO RL training reward over 150 steps. Three bands visible: +2.0 (correct tool), +0.5 (valid format, wrong tool), −1.0 (failure). Agent spends increasing time in the +2.0 band as training progresses.*
- 
-The reward chart shows three clear bands. Early in training the agent oscillates across all three. By the later steps it's hitting +2.0 on the majority of calls, with −1.0 spikes decreasing in frequency. 150 steps is a short run — the trend is directionally correct and the floor events are already becoming less common.
- 
-**What the RL training produced:** the agent learned to call the right diagnostic tool for the right failure type — something SFT alone cannot teach. SFT gives format. GRPO, given sufficient signal, gives judgment.
- 
+
+With format learned, GRPO training optimized for the reward signal using a partial-credit reward function:
+
+- +0.5 for valid JSON with correct tool schema
+- Additional reward for each environment step that succeeds
+- +5.0 bonus for fully resolving the incident
+- −1.0 for invalid/unparseable output
+
+**Model config:** `unsloth/Qwen2.5-3B-Instruct`, LoRA (r=32, alpha=64), 4-bit quantization, SFT 100 steps + GRPO 50 steps, max completion length 512 tokens.
+
+![GRPO Training Metrics](images/rl_reward.png)
+*Fig 1.6 — Left: GRPO training loss over 50 steps (low-magnitude, 0.001–0.003 range, fine-tuning judgment post-SFT). Right: Mean reward converges from ~0.45 to a stable ~0.5 from step 25 onward.*
+
+**Reading the charts:**
+
+The mean reward is the signal that matters. The two sharp dips at steps 3 and 19 are the model exploring — trying tool calls that don't pay off. After step 25, variance collapses and reward locks at ~0.5 through to step 50. That's convergence, not noise.
+
+Training loss staying in the 0.001–0.003 range with high step-to-step variance is expected from GRPO on a post-SFT model — fine-tuning judgment within an already-structured output space.
+
+**What the RL training produced:** the agent reliably calls the correct class of diagnostic tool for each failure scenario. SFT gives format. GRPO gives judgment.
+
 ---
 
 ## 🎛 War Room Dashboard

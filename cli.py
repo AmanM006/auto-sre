@@ -91,6 +91,7 @@ def _api_response_to_step_data(data: dict, step_num: int) -> StepData:
         hypothesis    = data.get("hypothesis", ""),
         why           = data.get("why", ""),
         source        = data.get("source", ""),
+        confidence    = data.get("confidence", 0.0),
     )
 
 
@@ -342,6 +343,16 @@ def cmd_run(args):
                 else:
                     step_counter += 1
                     step_data = _api_response_to_step_data(data, step_num=step_counter)
+                    
+                    # Narration
+                    if view == "clean":
+                        action = step_data.action.lower()
+                        if "get_" in action or "metrics" in action:
+                            print(f"{C_MAG}🔍 Gathering signals...{R}")
+                        elif "restart" in action or "scale" in action or "flush" in action:
+                            print(f"{C_MAG}⚙️ Applying fix chain...{R}")
+                        time.sleep(0.3)
+
                     format_step(step_data, mode=view)
                     time.sleep(0.2)
 
